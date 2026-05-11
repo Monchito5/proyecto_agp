@@ -135,6 +135,7 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+splicing_env/
 
 # Spyder project settings
 .spyderproject
@@ -172,6 +173,12 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+#data
+*.gtf
+data/raw/
+
+
 
 # Cursor  
 #  Cursor is an AI-powered code editor.`.cursorignore` specifies files/directories to 
