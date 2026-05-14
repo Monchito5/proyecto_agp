@@ -1,6 +1,6 @@
 import sys
 from pathlib import Path
-from data_processing import obtener_sitios_splicing, extraer_secuencias_ventana
+from data_preprocessing import obtener_sitios_splicing, extraer_secuencias_ventana
 import gffutils
 
 
