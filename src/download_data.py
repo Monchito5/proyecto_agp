@@ -1,54 +1,64 @@
-import os
+"""
+download_data.py
+"""
+
 import gzip
 import urllib.request
 from pathlib import Path
-import gffutils 
+import gffutils
 
-def download_gencode(version="47", release="47", output_dir="data/raw"):
-    """Descarga anotación GTF y secuencias cDNA/ADN cromosómico de GENCODE"""
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
+# --- Constantes Simbólicas ---
+URL_GTF_GENCODE = "https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_47/gencode.v47.annotation.gtf.gz"
+URL_FASTA_GENCODE = "https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_47/GRCh38.primary_assembly.genome.fa.gz"
 
-    # Archivos más importantes:
-    # - Anotación completa (GTF)
-    gtf_url = f"https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_{release}/gencode.v{release}.annotation.gtf.gz"
-    # - Secuencias de todos los cromosomas (ADN)
-    dna_url = f"https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_{release}/GRCh38.primary_assembly.genome.fa.gz"
+def descargar_recursos_gencode(directorio_salida: str = "data/raw"):
+    """
+    Descarga y descomprime la anotación GTF y el genoma de referencia de GENCODE.
+    También crea la base de datos SQLite para consultas rápidas.
+    
+    Parámetros:
+        directorio_salida (str): Carpeta donde se guardarán los archivos.
+    """
+    ruta_base = Path(directorio_salida)
+    ruta_base.mkdir(parents=True, exist_ok=True)
 
-    gtf_out = os.path.join(output_dir, f"gencode.v{release}.annotation.gtf.gz")
-    dna_out = os.path.join(output_dir, "GRCh38.primary_assembly.genome.fa.gz")
-    db_out = gtf_out.replace('.gz', '.db')
+    ruta_gtf_comprimido = ruta_base / "gencode.v47.annotation.gtf.gz"
+    ruta_fasta_comprimido = ruta_base / "GRCh38.primary_assembly.genome.fa.gz"
+    
+    ruta_gtf_descomprimido = str(ruta_gtf_comprimido).replace('.gz', '')
+    ruta_fasta_descomprimido = str(ruta_fasta_comprimido).replace('.gz', '')
+    ruta_base_datos = ruta_gtf_descomprimido + ".db"
     
     print("Descargando anotación GTF...")
-    urllib.request.urlretrieve(gtf_url, gtf_out)
-    print("Descargando genoma...")
-    urllib.request.urlretrieve(dna_url, dna_out)
-
-    # Descomprimir 
-    with gzip.open(gtf_out, 'rb') as f_in:
-        with open(gtf_out.replace('.gz', ''), 'wb') as f_out:
-            f_out.write(f_in.read())
-    with gzip.open(dna_out, 'rb') as f_in:
-        with open(dna_out.replace('.gz', ''), 'wb') as f_out:
-            f_out.write(f_in.read())
+    urllib.request.urlretrieve(URL_GTF_GENCODE, ruta_gtf_comprimido)
     
+    print("Descargando genoma de referencia...")
+    urllib.request.urlretrieve(URL_FASTA_GENCODE, ruta_fasta_comprimido)
 
-    print("Creando base de datos gffutils (esto puede tardar unos minutos)...")
+    print("Descomprimiendo archivos...")
+    with gzip.open(ruta_gtf_comprimido, 'rb') as archivo_entrada:
+        with open(ruta_gtf_descomprimido, 'wb') as archivo_salida:
+            archivo_salida.write(archivo_entrada.read())
+            
+    with gzip.open(ruta_fasta_comprimido, 'rb') as archivo_entrada:
+        with open(ruta_fasta_descomprimido, 'wb') as archivo_salida:
+            archivo_salida.write(archivo_entrada.read())
+    
+    print("Construyendo base de datos GFFUtils (este paso requiere tiempo)...")
     try:
-        db = gffutils.create_db(
-            gtf_out, 
-            dbfn=db_out, 
+        gffutils.create_db(
+            ruta_gtf_descomprimido, 
+            dbfn=ruta_base_datos, 
             force=True, 
             keep_order=True, 
             merge_strategy='merge', 
             sort_attribute_values=True,
-            disable_infer_genes=True, # Recomendado para GENCODE ya que trae los genes definidos
+            disable_infer_genes=True,
             disable_infer_transcripts=True
         )
-        print(f"Base de datos creada exitosamente en: {db_out}")
-    except Exception as e:
-        print(f"Error al crear la base de datos: {e}")
-
-    print(f"Archivos guardados en {output_dir}")
+        print(f"✓ Base de datos generada exitosamente en: {ruta_base_datos}")
+    except Exception as error_db:
+        print(f"Error crítico al crear la base de datos: {error_db}")
 
 if __name__ == "__main__":
-    download_gencode()
+    descargar_recursos_gencode()

@@ -1,158 +1,151 @@
+"""
+data_preprocessing.py
+"""
+
 import gffutils
 from pyfaidx import Fasta
 import pandas as pd
 from pathlib import Path
 import random
+from typing import Optional
 
-def obtener_sitios_splicing(db, limit=None):
+def obtener_sitios_reales(base_datos: gffutils.FeatureDB, limite_genes: Optional[int] = None) -> pd.DataFrame:
     """
-    Extrae coordenadas de sitios donantes (GT) reales de la base de datos.
-    Deduplica por coordenadas para evitar sesgos por múltiples transcritos.
-    """
-    datos = []
-    genes = db.features_of_type('gene')
+    Extrae coordenadas de sitios donantes (GT) reales de la base de datos genómica.
     
-    print("Extrayendo sitios reales...")
-    for i, gene in enumerate(genes):
-        if limit and i >= limit: break
+    Parámetros:
+        base_datos (FeatureDB): Conexión a la base de datos de GFFUtils.
+        limite_genes (int): Cantidad máxima de genes a procesar.
         
-        for transcript in db.children(gene, featuretype='transcript'):
-            exones = list(db.children(transcript, featuretype='exon', order_by='start'))
+    Retorna:
+        pd.DataFrame: Tabla con columnas [chrom, pos, strand, label].
+    """
+    lista_sitios = []
+    coleccion_genes = base_datos.features_of_type('gene')
+    
+    print("Extrayendo sitios reales del genoma...")
+    for i, objeto_gene in enumerate(coleccion_genes):
+        if limite_genes and i >= limite_genes:
+            break
+        
+        for objeto_transcrito in base_datos.children(objeto_gene, featuretype='transcript'):
+            lista_exones = list(base_datos.children(objeto_transcrito, featuretype='exon', order_by='start'))
             
-            for j in range(len(exones) - 1):
-                exon_actual = exones[j]
-                # Sitio donante (5' splice site)
-                if exon_actual.strand == '+':
-                    pos = exon_actual.end
-                else:
-                    pos = exon_actual.start
+            for j in range(len(lista_exones) - 1):
+                objeto_exon = lista_exones[j]
+                posicion_donante = objeto_exon.end if objeto_exon.strand == '+' else objeto_exon.start
                 
-                datos.append({
-                    'chrom': exon_actual.chrom,
-                    'pos': pos,
-                    'strand': exon_actual.strand,
+                lista_sitios.append({
+                    'chrom': objeto_exon.chrom,
+                    'pos': posicion_donante,
+                    'strand': objeto_exon.strand,
                     'label': 1
                 })
     
-    df = pd.DataFrame(datos).drop_duplicates(subset=['chrom', 'pos', 'strand'])
-    return df
+    tabla_datos = pd.DataFrame(lista_sitios)
+    return tabla_datos.drop_duplicates(subset=['chrom', 'pos', 'strand'])
 
-def generar_decoys_simulados(n_decoys, sequence_length=200):
+def generar_señuelos_simulados(cantidad_objetivo: int, longitud_total: int = 200) -> pd.DataFrame:
     """
-    Genera secuencias decoy sintéticas con composición realista.
-    """
-    print(f"Modo simulación: Generando {n_decoys} secuencias decoy sintéticas...")
-    decoys = []
-    nucleotides = ['A', 'C', 'G', 'T']
+    Genera secuencias sintéticas que imitan la composición del ADN.
     
-    while len(decoys) < n_decoys:
-        # Generar secuencia con composición ~50% GC
-        secuencia = []
-        for _ in range(sequence_length):
+    Parámetros:
+        cantidad_objetivo (int): Número de secuencias a generar.
+        longitud_total (int): Tamaño de cada secuencia en nucleótidos.
+        
+    Retorna:
+        pd.DataFrame: Tabla con secuencias marcadas como clase 0.
+    """
+    print(f"Modo simulación: Generando {cantidad_objetivo} secuencias sintéticas...")
+    lista_decoys = []
+    base_nucleotidos = ['A', 'C', 'G', 'T']
+    
+    while len(lista_decoys) < cantidad_objetivo:
+        secuencia_lista = []
+        for _ in range(longitud_total):
             if random.random() < 0.5:
-                secuencia.append(random.choice(['G', 'C']))
+                secuencia_lista.append(random.choice(['G', 'C']))
             else:
-                secuencia.append(random.choice(['A', 'T']))
+                secuencia_lista.append(random.choice(['A', 'T']))
         
-        # Insertar 'GT' en posición aleatoria (simulando sitio donante)
-        pos_gt = random.randint(sequence_length // 4, 3 * sequence_length // 4)
-        secuencia[pos_gt] = 'G'
-        secuencia[pos_gt + 1] = 'T'
+        posicion_gt = random.randint(longitud_total // 4, 3 * longitud_total // 4)
+        secuencia_lista[posicion_gt] = 'G'
+        secuencia_lista[posicion_gt + 1] = 'T'
         
-        ventana = ''.join(secuencia)
-        if ventana not in decoys:
-            decoys.append(ventana)
+        cadena_final = ''.join(secuencia_lista)
+        if cadena_final not in lista_decoys:
+            lista_decoys.append(cadena_final)
             
     return pd.DataFrame({
-        'chrom': 'simulated',
-        'pos': 0,
-        'strand': '+',
-        'label': 0,
-        'sequence': decoys
+        'chrom': 'simulado', 'pos': 0, 'strand': '+', 'label': 0, 'sequence': lista_decoys
     })
 
-def obtener_sitios_senuelo(fasta_path, n_objetivo, df_reales, ventana=100):
+def obtener_sitios_señuelo(ruta_fasta: Path, cantidad: int, tabla_reales: pd.DataFrame) -> Optional[pd.DataFrame]:
     """
-    Genera sitios 'señuelo' (negativos) buscando dinucleótidos GT aleatorios 
-    que NO estén en el conjunto de sitios reales.
+    Busca sitios GT en el genoma real que no están anotados como funcionales.
     """
-    if not fasta_path.exists():
-        print("Archivo FASTA no encontrado. Usando modo simulación para decoys.")
+    if not ruta_fasta.exists():
         return None
 
     try:
-        genome = Fasta(str(fasta_path))
-    except Exception as e:
-        print(f"Error al leer FASTA: {e}. Usando modo simulación.")
+        objeto_genoma = Fasta(str(ruta_fasta))
+    except Exception as error_lectura:
+        print(f"Error al leer genoma: {error_lectura}")
         return None
 
-    reales_set = set(zip(df_reales['chrom'], df_reales['pos'], df_reales['strand']))
+    set_reales = set(zip(tabla_reales['chrom'], tabla_reales['pos'], tabla_reales['strand']))
+    lista_negativos = []
+    nombres_cromosomas = [c for c in objeto_genoma.keys() if '_' not in c and len(c) < 6]
     
-    datos_neg = []
-    chroms = [c for c in genome.keys() if '_' not in c and len(c) < 6] # Solo cromosomas principales
-    
-    print(f"Buscando {n_objetivo} sitios señuelo en el genoma...")
-    intentos = 0
-    while len(datos_neg) < n_objetivo and intentos < n_objetivo * 50:
-        intentos += 1
-        chrom = random.choice(chroms)
-        chrom_len = len(genome[chrom])
-        if chrom_len <= ventana * 2: continue
+    intentos_realizados = 0
+    while len(lista_negativos) < cantidad and intentos_realizados < cantidad * 50:
+        intentos_realizados += 1
+        nombre_chrom = random.choice(nombres_cromosomas)
+        longitud_chrom = len(objeto_genoma[nombre_chrom])
+        if longitud_chrom <= 200: continue
         
-        pos = random.randint(ventana + 1, chrom_len - ventana - 1)
+        pos_azar = random.randint(101, longitud_chrom - 101)
+        dinucleotido = objeto_genoma[nombre_chrom][pos_azar : pos_azar + 2].seq.upper()
+        sentido_hebra = random.choice(['+', '-'])
         
-        # Verificar GT
-        seq_check = genome[chrom][pos:pos+2].seq.upper()
-        strand = random.choice(['+', '-'])
-        
-        if seq_check == 'GT':
-            if (chrom, pos, strand) not in reales_set:
-                datos_neg.append({
-                    'chrom': chrom,
-                    'pos': pos,
-                    'strand': strand,
-                    'label': 0
+        if dinucleotido == 'GT':
+            if (nombre_chrom, pos_azar, sentido_hebra) not in set_reales:
+                lista_negativos.append({
+                    'chrom': nombre_chrom, 'pos': pos_azar, 'strand': sentido_hebra, 'label': 0
                 })
     
-    if len(datos_neg) < n_objetivo * 0.1:
-        print("No se encontraron suficientes sitios en el genoma. Usando modo simulación.")
-        return None
-        
-    return pd.DataFrame(datos_neg)
+    return pd.DataFrame(lista_negativos) if lista_negativos else None
 
-def extraer_secuencias_y_limpiar(df, fasta_path, ventana=100):
+def extraer_y_limpiar_secuencias(tabla_entrada: pd.DataFrame, ruta_fasta: Path) -> pd.DataFrame:
     """
-    Extrae secuencias del genoma, elimina aquellas con 'N' y asegura unicidad.
+    Extrae secuencias del genoma, filtra 'N' y elimina duplicados.
     """
-    if 'sequence' in df.columns: # Si ya tiene secuencias (ej. simuladas)
-        return df.drop_duplicates(subset=['sequence'])
+    if 'sequence' in tabla_entrada.columns:
+        return tabla_entrada.drop_duplicates(subset=['sequence'])
 
     try:
-        genome = Fasta(str(fasta_path))
+        objeto_genoma = Fasta(str(ruta_fasta))
     except Exception:
-        print("Error: FASTA requerido para extraer secuencias reales.")
         return pd.DataFrame()
 
-    secuencias = []
-    indices_validos = []
+    datos_finales = []
+    print(f"Procesando {len(tabla_entrada)} candidatos...")
     
-    print(f"Extrayendo secuencias para {len(df)} sitios...")
-    for idx, row in df.iterrows():
-        chrom, pos = row['chrom'], row['pos']
+    for _, fila in tabla_entrada.iterrows():
         try:
-            # Ventana simétrica 200nt
-            seq = genome[chrom][pos - ventana : pos + ventana].seq.upper()
-            if 'N' not in seq and len(seq) == (ventana * 2):
-                secuencias.append(seq)
-                indices_validos.append(idx)
+            secuencia = objeto_genoma[fila['chrom']][fila['pos'] - 100 : fila['pos'] + 100].seq.upper()
+            if 'N' not in secuencia and len(secuencia) == 200:
+                nueva_fila = fila.to_dict()
+                nueva_fila['sequence'] = secuencia
+                datos_finales.append(nueva_fila)
         except Exception:
             continue
             
-    df_result = df.loc[indices_validos].copy()
-    df_result['sequence'] = secuencias
+    tabla_resultado = pd.DataFrame(datos_finales)
+    if not tabla_resultado.empty:
+        total_previo = len(tabla_resultado)
+        # Mantener metadatos en la deduplicación
+        tabla_resultado = tabla_resultado.drop_duplicates(subset=['sequence'])
+        print(f"Limpieza completada: {total_previo} -> {len(tabla_resultado)} secuencias únicas.")
     
-    antes = len(df_result)
-    df_result = df_result.drop_duplicates(subset=['sequence'])
-    print(f"Limpieza: {antes} -> {len(df_result)} secuencias únicas.")
-    
-    return df_result
+    return tabla_resultado

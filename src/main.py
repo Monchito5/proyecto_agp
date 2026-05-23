@@ -1,120 +1,144 @@
+"""
+main.py
+Integrador principal del Pipeline de Predicción de Sitios de Splicing.
+Este programa orquesta las fases de preprocesamiento, análisis exploratorio (EDA),
+optimización de hiperparámetros mediante evolución diferencial y entrenamiento final.
+"""
+
 import sys
-from pathlib import Path
-import pandas as pd
+import argparse
 import gffutils
+import pandas as pd
+import numpy as np
+from pathlib import Path
 from sklearn.model_selection import train_test_split
 
-# Importaciones locales
-from data_preprocessing import obtener_sitios_splicing, obtener_sitios_senuelo, generar_decoys_simulados, extraer_secuencias_y_limpiar
-from eda import perform_general_analysis, perform_specific_analysis
+# Importaciones de módulos locales refactorizados
+from data_preprocessing import (
+    obtener_sitios_reales, 
+    obtener_sitios_señuelo, 
+    generar_señuelos_simulados, 
+    extraer_y_limpiar_secuencias
+)
+from eda import realizar_analisis_general, realizar_analisis_especifico
+from optimizer import (
+    OptimizadorHiperparametros, 
+    evolucion_diferencial, 
+    ConfiguracionEvolutiva
+)
 
-# Configuración de rutas
-ROOT_DIR = Path(__file__).parent.parent
-DATA_RAW_DIR = ROOT_DIR / "data" / "raw"
-DATA_EXPORT_DIR = ROOT_DIR / "data" / "export"
+# --- Constantes Simbólicas ---
+RAIZ = Path(__file__).parent.parent
+RAW_DIR = RAIZ / "data" / "raw"
+EXP_DIR = RAIZ / "data" / "export"
 
-DB_FILE = DATA_RAW_DIR / "gencode.v47.annotation.gtf.db"
-FASTA_FILE = DATA_RAW_DIR / "GRCh38.primary_assembly.genome.fa"
+DB_PATH = RAW_DIR / "gencode.v47.annotation.gtf.db"
+FASTA_PATH = RAW_DIR / "GRCh38.primary_assembly.genome.fa"
+DATASET_BAL = EXP_DIR / "dataset_consolidado_balanceado.csv"
+TRAIN_PATH = EXP_DIR / "dataset_entrenamiento.csv"
+TEST_PATH = EXP_DIR / "dataset_prueba.csv"
 
-class PipelineManager:
+class GestorPipeline:
+    """Administra el flujo de trabajo completo del proyecto."""
+
     def __init__(self):
-        DATA_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
-        self.db = None
-        self.dataset = None
+        EXP_DIR.mkdir(parents=True, exist_ok=True)
+        self.conexion_db = None
+        self.tabla_datos = None
 
-    def _load_db(self):
-        if not DB_FILE.exists():
-            raise FileNotFoundError(f"Base de datos no encontrada en {DB_FILE}. Ejecute descarga primero.")
-        self.db = gffutils.FeatureDB(str(DB_FILE))
-        print("✓ Conexión a GFFUtils DB establecida.")
+    def conectar_db(self):
+        """Conecta a la base de datos de GFFUtils."""
+        if not DB_PATH.exists():
+            print(f"Error: DB no hallada en {DB_PATH}. Ejecute download_data.py.")
+            sys.exit(1)
+        self.conexion_db = gffutils.FeatureDB(str(DB_PATH))
 
-    def run_preprocessing(self, limit_genes=500, balance=True):
-        """Paso 1: Extracción, Limpieza, Muestreo de Negativos y Deduplicación."""
-        print("\n=== INICIANDO PREPROCESAMIENTO ===")
-        self._load_db()
+    def preprocesar(self, limite: int = 0):
+        """Etapa de extracción y limpieza masiva."""
+        print("\n=== ETAPA 1: PREPROCESAMIENTO ===")
+        self.conectar_db()
+        reales = obtener_sitios_reales(self.conexion_db, limite_genes=(None if limite == 0 else limite))
+        reales_limpios = extraer_y_limpiar_secuencias(reales, FASTA_PATH)
         
-        # 1. Sitios Reales
-        df_reales = obtener_sitios_splicing(self.db, limit=limit_genes)
-        print(f"Extraídos {len(df_reales)} sitios reales únicos por coordenadas.")
-
-        # 2. Secuencias Reales y Limpieza 'N'
-        df_reales_seq = extraer_secuencias_y_limpiar(df_reales, FASTA_FILE)
+        objetivo = len(reales_limpios)
+        print(f"Buscando {objetivo} señuelos...")
+        negativos = obtener_sitios_señuelo(FASTA_PATH, objetivo, reales_limpios)
         
-        if balance:
-            # 3. Generación de Negativos (Decoys)
-            print("\nGenerando balance de clases...")
-            n_target = len(df_reales_seq)
-            df_negativos = obtener_sitios_senuelo(FASTA_FILE, n_target, df_reales_seq)
-            
-            if df_negativos is not None:
-                df_negativos = extraer_secuencias_y_limpiar(df_negativos, FASTA_FILE)
-                if len(df_negativos) < n_target:
-                    df_sim = generar_decoys_simulados(n_target - len(df_negativos))
-                    df_negativos = pd.concat([df_negativos, df_sim], ignore_index=True)
-            else:
-                df_negativos = generar_decoys_simulados(n_target)
-            
-            self.dataset = pd.concat([df_reales_seq, df_negativos], ignore_index=True)
+        if negativos is not None:
+            neg_limpios = extraer_y_limpiar_secuencias(negativos, FASTA_PATH)
+            if len(neg_limpios) < objetivo:
+                simulados = generar_señuelos_simulados(objetivo - len(neg_limpios))
+                neg_limpios = pd.concat([neg_limpios, simulados])
         else:
-            self.dataset = df_reales_seq
+            neg_limpios = generar_señuelos_simulados(objetivo)
 
-        # Mezclar y guardar
-        self.dataset = self.dataset.sample(frac=1, random_state=42).reset_index(drop=True)
-        output_path = DATA_EXPORT_DIR / "dataset_consolidado_balanceado.csv"
-        self.dataset.to_csv(output_path, index=False)
-        print(f"✓ Dataset consolidado guardado en {output_path}")
-        print(f"Composición: {self.dataset['label'].value_counts().to_dict()}")
+        self.tabla_datos = pd.concat([reales_limpios, neg_limpios], ignore_index=True)
+        self.tabla_datos = self.tabla_datos.sample(frac=1, random_state=42).reset_index(drop=True)
+        self.tabla_datos.to_csv(DATASET_BAL, index=False)
+        print(f"✓ Dataset balanceado generado: {len(self.tabla_datos)} filas.")
 
-    def run_eda(self):
-        """Paso 2: Análisis Exploratorio exhaustivo."""
-        print("\n=== EJECUTANDO EDA ===")
-        if self.dataset is None:
-            path = DATA_EXPORT_DIR / "dataset_consolidado_balanceado.csv"
-            if not path.exists():
-                print("Error: No hay dataset para analizar.")
-                return
-            self.dataset = pd.read_csv(path)
-        
-        if self.db is None: self._load_db()
-        
-        perform_general_analysis(self.dataset)
-        perform_specific_analysis(self.dataset, self.db)
-        print("✓ Reporte visual generado en data/export/")
-
-    def run_split(self, test_size=0.2):
-        """Paso 3: Partición estratificada para entrenamiento."""
-        print(f"\n=== PARTICIÓN DE DATOS (Test size: {test_size}) ===")
-        if self.dataset is None:
-            self.dataset = pd.read_csv(DATA_EXPORT_DIR / "dataset_consolidado_balanceado.csv")
+    def optimizar(self):
+        """Búsqueda de hiperparámetros mediante Evolución Diferencial."""
+        print("\n=== ETAPA: OPTIMIZACIÓN EVOLUTIVA ===")
+        if not TRAIN_PATH.exists():
+            self.particionar()
             
-        train_df, test_df = train_test_split(
-            self.dataset, 
-            test_size=test_size, 
-            stratify=self.dataset['label'],
-            random_state=42
-        )
+        opt = OptimizadorHiperparametros(TRAIN_PATH, TEST_PATH)
+        limites = np.array([
+            [-4.0, -2.0], # Log LR
+            [0.1, 0.6],   # Dropout
+            [32, 128],    # Filtros 1
+            [64, 256],    # Filtros 2
+            [128, 512],   # Filtros 3
+            [2, 10],      # Kernel 1 (base)
+            [1, 7],       # Kernel 2 (base)
+            [1, 5]        # Kernel 3 (base)
+        ])
         
-        train_df.to_csv(DATA_EXPORT_DIR / "dataset_train.csv", index=False)
-        test_df.to_csv(DATA_EXPORT_DIR / "dataset_test.csv", index=False)
-        print(f"✓ Partición completada: Train({len(train_df)}), Test({len(test_df)})")
+        config = ConfiguracionEvolutiva(tamano_poblacion=8, total_generaciones=10)
+        resultado = evolucion_diferencial(opt.funcion_aptitud, limites, config)
+        
+        print("\n=== MEJOR CONFIGURACIÓN ENCONTRADA ===")
+        print(f"Mejor Error (Val): {resultado.mejor_aptitud:.4f}")
+        print(f"Vector Óptimo: {resultado.mejor_vector}")
+        
+        # Guardar resultados
+        np.save(EXP_DIR / "hiperparametros_optimos.npy", resultado.mejor_vector)
 
-def main():
-    import argparse
-    parser = argparse.ArgumentParser(description="Genomic Splicing Pipeline")
-    parser.add_argument("--step", choices=['all', 'preprocess', 'eda', 'split'], default='all')
-    parser.add_argument("--limit", type=int, default=500, help="Límite de genes para procesar")
+    def particionar(self):
+        """Divide el dataset en entrenamiento y prueba."""
+        print("\n=== ETAPA 3: PARTICIÓN ESTRATIFICADA ===")
+        if self.tabla_datos is None:
+            self.tabla_datos = pd.read_csv(DATASET_BAL)
+        
+        entreno, prueba = train_test_split(
+            self.tabla_datos, test_size=0.2, 
+            stratify=self.tabla_datos['label'], random_state=42
+        )
+        entreno.to_csv(TRAIN_PATH, index=False)
+        prueba.to_csv(TEST_PATH, index=False)
+        print(f"✓ Partición: Entreno({len(entreno)}), Prueba({len(prueba)})")
+
+    def ejecutar_eda(self):
+        """Genera reportes visuales."""
+        if self.tabla_datos is None:
+            self.tabla_datos = pd.read_csv(DATASET_BAL)
+        self.conectar_db()
+        realizar_analisis_general(self.tabla_datos, EXP_DIR)
+        realizar_analisis_especifico(self.tabla_datos, self.conexion_db, EXP_DIR)
+
+def principal():
+    parser = argparse.ArgumentParser(description="Pipeline Splicing CNN")
+    parser.add_argument("--paso", choices=['todo', 'pre', 'eda', 'opt', 'part'], default='todo')
+    parser.add_argument("--limite", type=int, default=50) # Reducido para prueba rápida
     
     args = parser.parse_args()
-    pipeline = PipelineManager()
+    gestor = GestorPipeline()
 
-    if args.step in ['all', 'preprocess']:
-        pipeline.run_preprocessing(limit_genes=args.limit)
-    
-    if args.step in ['all', 'eda']:
-        pipeline.run_eda()
-        
-    if args.step in ['all', 'split']:
-        pipeline.run_split()
+    if args.paso in ['todo', 'pre']: gestor.preprocesar(args.limite)
+    if args.paso in ['todo', 'part']: gestor.particionar()
+    if args.paso in ['todo', 'eda']: gestor.ejecutar_eda()
+    if args.paso == 'opt': gestor.optimizar()
 
 if __name__ == "__main__":
-    main()
+    principal()
