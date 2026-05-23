@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import numpy as np
 from pathlib import Path
-from data_preprocessing import obtener_sitios_splicing, extraer_secuencias_ventana
+from data_preprocessing import obtener_sitios_splicing, extraer_secuencias_y_limpiar
 
 # Configuración de estilo
 sns.set_theme(style="whitegrid")
@@ -24,10 +24,6 @@ def perform_general_analysis(df):
     
     # 1. Dimensiones y composición de features
     print("Analizando dimensiones...")
-    dims = pd.DataFrame({
-        'Métrica': ['Filas', 'Columnas'],
-        'Valor': [df.shape[0], df.shape[1]]
-    })
     
     # Clasificar columnas por tipo
     cat_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
@@ -50,11 +46,7 @@ def perform_general_analysis(df):
 
     # 2. Tipos de datos (Heatmap)
     print("Analizando tipos de datos...")
-    types_df = df.dtypes.to_frame(name='Dtype')
-    types_df['Type_Str'] = types_df['Dtype'].astype(str)
-    
-    # Crear matriz para heatmap
-    unique_types = types_df['Type_Str'].unique()
+    unique_types = [str(t) for t in df.dtypes.unique()]
     type_matrix = pd.DataFrame(0, index=df.columns, columns=unique_types)
     for col in df.columns:
         type_matrix.loc[col, str(df[col].dtype)] = 1
@@ -78,7 +70,6 @@ def perform_general_analysis(df):
         plt.savefig(OUTPUT_DIR / "gen_03_nulos_bar.png")
         plt.close()
     else:
-        # Si no hay nulos, crear un heatmap de completitud
         plt.figure()
         sns.heatmap(df.isnull(), cbar=False, yticklabels=False, cmap='viridis')
         plt.title("Mapa de Completitud (No se detectaron nulos)")
@@ -88,26 +79,27 @@ def perform_general_analysis(df):
     # 4. Estadísticas descriptivas (Numéricas)
     if num_cols:
         print("Generando estadísticas numéricas...")
-        # Histograma + Boxplot de donor_pos
+        col_to_plot = 'pos' if 'pos' in num_cols else num_cols[0]
         fig, (ax_box, ax_hist) = plt.subplots(2, sharex=True, gridspec_kw={"height_ratios": (.15, .85)})
-        sns.boxplot(data=df, x=num_cols[0], ax=ax_box, color='lightgreen')
-        sns.histplot(data=df, x=num_cols[0], ax=ax_hist, kde=True, color='teal')
-        ax_box.set(yticks=[], title=f"Distribución de {num_cols[0]}")
+        sns.boxplot(data=df, x=col_to_plot, ax=ax_box, color='lightgreen')
+        sns.histplot(data=df, x=col_to_plot, ax=ax_hist, kde=True, color='teal')
+        ax_box.set(yticks=[], title=f"Distribución de {col_to_plot}")
         plt.tight_layout()
-        plt.savefig(OUTPUT_DIR / f"gen_04_dist_{num_cols[0]}.png")
+        plt.savefig(OUTPUT_DIR / f"gen_04_dist_{col_to_plot}.png")
         plt.close()
 
-    # 5. Composición de bases por posición (Sequences)
+    # 5. Composición de bases por posición
     if seq_cols:
         print("Analizando composición por posición...")
         seq_col = seq_cols[0]
-        # Tomar una muestra para rapidez si es muy grande
         sample_size = min(5000, len(df))
         seqs = df[seq_col].iloc[:sample_size].apply(list)
         pos_df = pd.DataFrame(seqs.tolist())
         
         comp_pos = pos_df.apply(lambda x: pd.Series(x).value_counts(normalize=True)).fillna(0).T
-        comp_pos = comp_pos[['A', 'C', 'G', 'T']] if all(nt in comp_pos.columns for nt in 'ACGT') else comp_pos
+        for nt in 'ACGT':
+            if nt not in comp_pos.columns: comp_pos[nt] = 0
+        comp_pos = comp_pos[['A', 'C', 'G', 'T']]
 
         comp_pos.plot(kind='bar', stacked=True, width=1.0, figsize=(15, 6), color=['#619CFF', '#00BA38', '#F8766D', '#B79F00'])
         plt.title(f"Perfil de Composición de Bases por Posición ({seq_col})")
@@ -126,17 +118,14 @@ def perform_specific_analysis(df, db):
     # 1. Balance de clases
     print("Analizando balance de clases...")
     plt.figure(figsize=(7, 7))
-    if 'label' in df.columns:
-        class_counts = df['label'].value_counts()
-        plt.pie(class_counts, labels=class_counts.index, autopct='%1.1f%%', colors=['#66b3ff','#99ff99'])
-    else:
-        plt.bar(['Verdaderos (Anotados)'], [len(df)], color='skyblue')
-        plt.text(0, len(df)/2, "No se encontraron señuelos aún", ha='center')
-    plt.title("Balance de Clases (Verdaderos vs Señuelos)")
+    class_counts = df['label'].value_counts()
+    labels = [f"Clase {c} (N={n})" for c, n in class_counts.items()]
+    plt.pie(class_counts, labels=labels, autopct='%1.1f%%', colors=['#66b3ff','#99ff99'])
+    plt.title("Balance de Clases (1: Verdadero, 0: Señuelo)")
     plt.savefig(OUTPUT_DIR / "spec_01_balance_clases.png")
     plt.close()
 
-    # 2. Distribución por cromosoma (Top 10)
+    # 2. Distribución por cromosoma
     print("Analizando distribución cromosómica...")
     chrom_counts = df['chrom'].value_counts().head(10)
     plt.figure()
@@ -148,9 +137,9 @@ def perform_specific_analysis(df, db):
     plt.savefig(OUTPUT_DIR / "spec_02_dist_cromosomas.png")
     plt.close()
 
-    # 3. Composición nucleotídica global (Pie)
+    # 3. Composición nucleotídica global
     print("Analizando composición global...")
-    all_seqs = "".join(df['sequence'].iloc[:10000].tolist())
+    all_seqs = "".join(df['sequence'].iloc[:min(10000, len(df))].tolist())
     freqs = {nt: all_seqs.count(nt) for nt in 'ACGT'}
     plt.figure(figsize=(7, 7))
     plt.pie(freqs.values(), labels=freqs.keys(), autopct='%1.1f%%', colors=sns.color_palette('viridis', 4))
@@ -158,25 +147,20 @@ def perform_specific_analysis(df, db):
     plt.savefig(OUTPUT_DIR / "spec_03_composicion_global.png")
     plt.close()
 
-    # 4. Contenido GC por clase (Violin Plot)
-    print("Analizando Contenido GC...")
+    # 4. Contenido GC por clase
+    print("Analizando Contenido GC por clase...")
     def calc_gc(seq):
         return (seq.count('G') + seq.count('C')) / len(seq) if seq else 0
-    
     df['gc_content'] = df['sequence'].apply(calc_gc)
     
     plt.figure()
-    if 'label' in df.columns:
-        sns.violinplot(data=df, x='label', y='gc_content', palette='Set2')
-    else:
-        sns.violinplot(y=df['gc_content'], color='lightsalmon')
-        plt.xlabel("Dataset Completo")
-    plt.title("Distribución de Contenido GC")
+    sns.violinplot(data=df, x='label', y='gc_content', palette='Set2')
+    plt.title("Distribución de Contenido GC por Clase")
     plt.ylabel("Fracción GC")
     plt.savefig(OUTPUT_DIR / "spec_04_gc_content_violin.png")
     plt.close()
 
-    # 5. Correlación (Heatmap Spearman)
+    # 5. Correlación
     print("Analizando correlaciones...")
     num_df = df.select_dtypes(include=[np.number])
     if num_df.shape[1] > 1:
@@ -186,25 +170,24 @@ def perform_specific_analysis(df, db):
         plt.savefig(OUTPUT_DIR / "spec_05_correlacion_heatmap.png")
         plt.close()
 
-    # 6. Longitud de exones e intrones (DB)
+    # 6. Longitud de exones (DB)
     print("Analizando longitudes desde la base de datos...")
     exon_lengths = [len(f) for i, f in enumerate(db.features_of_type('exon')) if i < 5000]
-    
     fig, (ax_box, ax_hist) = plt.subplots(2, sharex=True, gridspec_kw={"height_ratios": (.15, .85)})
     sns.boxplot(x=exon_lengths, ax=ax_box, color='gold')
     sns.histplot(x=exon_lengths, ax=ax_hist, kde=True, color='orange', bins=50)
     ax_box.set(yticks=[], title="Distribución de Longitudes de Exones (Muestra DB)")
     plt.xlabel("Longitud (pb)")
-    plt.xlim(0, 1000) # Limitar para visualización
+    plt.xlim(0, 1000)
     plt.tight_layout()
     plt.savefig(OUTPUT_DIR / "spec_06_longitud_exones.png")
     plt.close()
 
 def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    
-    DATASET_CSV = OUTPUT_DIR / "dataset_splicing_200nt.csv"
-    
+
+    DATASET_CSV = OUTPUT_DIR / "dataset_consolidado_balanceado.csv"
+
     if not DATASET_CSV.exists():
         print(f"Error: No se encontró el dataset en {DATASET_CSV}")
         return
@@ -216,10 +199,8 @@ def main():
         return
     db = gffutils.FeatureDB(str(DB_FILE))
 
-    # Ejecutar análisis
     perform_general_analysis(df)
     perform_specific_analysis(df, db)
-
     print(f"\nEDA y Exportación completados. Ver archivos en: {OUTPUT_DIR}")
 
 if __name__ == "__main__":
