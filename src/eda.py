@@ -114,11 +114,21 @@ def realizar_analisis_especifico(tabla_datos: pd.DataFrame, base_datos: gffutils
 
     # 5. Correlación (Heatmap Spearman)
     print("Analizando correlaciones entre variables numéricas...")
-    columnas_numericas = tabla_datos.select_dtypes(include=[np.number])
-    if columnas_numericas.shape[1] > 1:
+    df_numerico = tabla_datos.select_dtypes(include=[np.number]).copy()
+    
+    # Mapeo de nombres para el gráfico
+    nombres_descriptivos = {
+        'label': 'Naturaleza (Real/Señuelo)',
+        'pos': 'Posición Genómica',
+        'contenido_gc': 'Contenido GC %'
+    }
+    df_numerico = df_numerico.rename(columns=nombres_descriptivos)
+    
+    if df_numerico.shape[1] > 1:
         plt.figure()
-        sns.heatmap(columnas_numericas.corr(method='spearman'), annot=True, cmap='coolwarm', fmt=".2f")
+        sns.heatmap(df_numerico.corr(method='spearman'), annot=True, cmap='coolwarm', fmt=".2f")
         plt.title("Punto 5: Mapa de Calor de Correlación (Spearman)")
+        plt.tight_layout()
         plt.savefig(ruta_salida / "spec_05_correlacion_heatmap.png")
         plt.close()
 
