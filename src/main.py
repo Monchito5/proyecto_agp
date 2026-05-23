@@ -27,45 +27,55 @@ from optimizer import (
     ConfiguracionEvolutiva
 )
 
-# --- Constantes Simbólicas ---
+# --- Constantes Simbólicas de Rutas ---
 RAIZ = Path(__file__).parent.parent
-RAW_DIR = RAIZ / "data" / "raw"
-EXP_DIR = RAIZ / "data" / "export"
+RUTA_RAW = RAIZ / "data" / "raw"
+RUTA_PROCESADOS = RAIZ / "data" / "processed"
+RUTA_EXPORT = RAIZ / "data" / "export"
+RUTA_FIGURAS = RAIZ / "data" / "figures"
 
-DB_PATH = RAW_DIR / "gencode.v47.annotation.gtf.db"
-FASTA_PATH = RAW_DIR / "GRCh38.primary_assembly.genome.fa"
-DATASET_BAL = EXP_DIR / "dataset_consolidado_balanceado.csv"
-TRAIN_PATH = EXP_DIR / "dataset_entrenamiento.csv"
-TEST_PATH = EXP_DIR / "dataset_prueba.csv"
+ARCHIVO_BASE_DATOS = RUTA_EXPORT / "gencode.v47.annotation.gtf.db"
+ARCHIVO_GENOMA_FASTA = RUTA_RAW / "GRCh38.primary_assembly.genome.fa"
+
+ARCHIVO_DATASET_CONSOLIDADO = RUTA_PROCESADOS / "dataset_consolidado_balanceado.csv"
+ARCHIVO_TRAIN = RUTA_PROCESADOS / "dataset_entrenamiento.csv"
+ARCHIVO_TEST = RUTA_PROCESADOS / "dataset_prueba.csv"
+
+# --- Configuración Estándar ---
+TAMANO_TEST_ESTANDAR = 0.2
+SEMILLA_ALEATORIA = 42
 
 class GestorPipeline:
     """Administra el flujo de trabajo completo del proyecto."""
 
     def __init__(self):
-        EXP_DIR.mkdir(parents=True, exist_ok=True)
+        """Asegura la existencia de la estructura de carpetas."""
+        for carpeta in [RUTA_PROCESADOS, RUTA_EXPORT, RUTA_FIGURAS]:
+            carpeta.mkdir(parents=True, exist_ok=True)
         self.conexion_db = None
         self.tabla_datos = None
 
     def conectar_db(self):
-        """Conecta a la base de datos de GFFUtils."""
-        if not DB_PATH.exists():
-            print(f"Error: DB no hallada en {DB_PATH}. Ejecute download_data.py.")
+        """Conecta a la base de datos de GFFUtils en data/export/."""
+        if not ARCHIVO_BASE_DATOS.exists():
+            print(f"Error crítico: DB no hallada en {ARCHIVO_BASE_DATOS}.")
+            print("Asegúrese de ejecutar src/download_data.py.")
             sys.exit(1)
-        self.conexion_db = gffutils.FeatureDB(str(DB_PATH))
+        self.conexion_db = gffutils.FeatureDB(str(ARCHIVO_BASE_DATOS))
 
     def preprocesar(self, limite: int = 0):
         """Etapa de extracción y limpieza masiva."""
         print("\n=== ETAPA 1: PREPROCESAMIENTO ===")
         self.conectar_db()
         reales = obtener_sitios_reales(self.conexion_db, limite_genes=(None if limite == 0 else limite))
-        reales_limpios = extraer_y_limpiar_secuencias(reales, FASTA_PATH)
+        reales_limpios = extraer_y_limpiar_secuencias(reales, ARCHIVO_GENOMA_FASTA)
         
         objetivo = len(reales_limpios)
         print(f"Buscando {objetivo} señuelos...")
-        negativos = obtener_sitios_señuelo(FASTA_PATH, objetivo, reales_limpios)
+        negativos = obtener_sitios_señuelo(ARCHIVO_GENOMA_FASTA, objetivo, reales_limpios)
         
         if negativos is not None:
-            neg_limpios = extraer_y_limpiar_secuencias(negativos, FASTA_PATH)
+            neg_limpios = extraer_y_limpiar_secuencias(negativos, ARCHIVO_GENOMA_FASTA)
             if len(neg_limpios) < objetivo:
                 simulados = generar_señuelos_simulados(objetivo - len(neg_limpios))
                 neg_limpios = pd.concat([neg_limpios, simulados])
@@ -74,16 +84,16 @@ class GestorPipeline:
 
         self.tabla_datos = pd.concat([reales_limpios, neg_limpios], ignore_index=True)
         self.tabla_datos = self.tabla_datos.sample(frac=1, random_state=42).reset_index(drop=True)
-        self.tabla_datos.to_csv(DATASET_BAL, index=False)
-        print(f"✓ Dataset balanceado generado: {len(self.tabla_datos)} filas.")
+        self.tabla_datos.to_csv(ARCHIVO_DATASET_CONSOLIDADO, index=False)
+        print(f"✓ Dataset consolidado generado en: {RUTA_PROCESADOS.name}")
 
     def optimizar(self):
         """Búsqueda de hiperparámetros mediante Evolución Diferencial."""
         print("\n=== ETAPA: OPTIMIZACIÓN EVOLUTIVA ===")
-        if not TRAIN_PATH.exists():
+        if not ARCHIVO_TRAIN.exists():
             self.particionar()
             
-        opt = OptimizadorHiperparametros(TRAIN_PATH, TEST_PATH)
+        opt = OptimizadorHiperparametros(ARCHIVO_TRAIN, ARCHIVO_TEST)
         limites = np.array([
             [-4.0, -2.0], # Log LR
             [0.1, 0.6],   # Dropout
@@ -100,37 +110,43 @@ class GestorPipeline:
         
         print("\n=== MEJOR CONFIGURACIÓN ENCONTRADA ===")
         print(f"Mejor Error (Val): {resultado.mejor_aptitud:.4f}")
-        print(f"Vector Óptimo: {resultado.mejor_vector}")
         
-        # Guardar resultados
-        np.save(EXP_DIR / "hiperparametros_optimos.npy", resultado.mejor_vector)
+        # Guardar resultados en procesados
+        np.save(RUTA_PROCESADOS / "hiperparametros_optimos.npy", resultado.mejor_vector)
 
     def particionar(self):
         """Divide el dataset en entrenamiento y prueba."""
         print("\n=== ETAPA 3: PARTICIÓN ESTRATIFICADA ===")
         if self.tabla_datos is None:
-            self.tabla_datos = pd.read_csv(DATASET_BAL)
+            self.tabla_datos = pd.read_csv(ARCHIVO_DATASET_CONSOLIDADO)
         
         entreno, prueba = train_test_split(
-            self.tabla_datos, test_size=0.2, 
-            stratify=self.tabla_datos['label'], random_state=42
+            self.tabla_datos, test_size=TAMANO_TEST_ESTANDAR, 
+            stratify=self.tabla_datos['label'], random_state=SEMILLA_ALEATORIA
         )
-        entreno.to_csv(TRAIN_PATH, index=False)
-        prueba.to_csv(TEST_PATH, index=False)
-        print(f"✓ Partición: Entreno({len(entreno)}), Prueba({len(prueba)})")
+        entreno.to_csv(ARCHIVO_TRAIN, index=False)
+        prueba.to_csv(ARCHIVO_TEST, index=False)
+        print(f"✓ Partición: Entrenamiento({len(entreno)}), Prueba({len(prueba)})")
 
     def ejecutar_eda(self):
-        """Genera reportes visuales."""
+        """Genera reportes visuales en data/figures/."""
+        print("\n=== ETAPA 2: ANÁLISIS EXPLORATORIO DE DATOS ===")
         if self.tabla_datos is None:
-            self.tabla_datos = pd.read_csv(DATASET_BAL)
+            if not ARCHIVO_DATASET_CONSOLIDADO.exists():
+                print("Error: Dataset no encontrado.")
+                return
+            self.tabla_datos = pd.read_csv(ARCHIVO_DATASET_CONSOLIDADO)
+        
         self.conectar_db()
-        realizar_analisis_general(self.tabla_datos, EXP_DIR)
-        realizar_analisis_especifico(self.tabla_datos, self.conexion_db, EXP_DIR)
+        realizar_analisis_general(self.tabla_datos, RUTA_FIGURAS)
+        realizar_analisis_especifico(self.tabla_datos, self.conexion_db, RUTA_FIGURAS)
+        print(f"✓ Visualizaciones generadas en: {RUTA_FIGURAS.name}")
 
 def principal():
-    parser = argparse.ArgumentParser(description="Pipeline Splicing CNN")
+    """Función de entrada al programa principal."""
+    parser = argparse.ArgumentParser(description="Pipeline Splicing CNN Production")
     parser.add_argument("--paso", choices=['todo', 'pre', 'eda', 'opt', 'part'], default='todo')
-    parser.add_argument("--limite", type=int, default=50) # Reducido para prueba rápida
+    parser.add_argument("--limite", type=int, default=0) 
     
     args = parser.parse_args()
     gestor = GestorPipeline()
