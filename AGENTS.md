@@ -1,0 +1,3 @@
+
+1. **Separación de carpetas:** Se explicita que todo archivo de programación funcional (`.py`) se almacena en **`/src`**, mientras que los resultados del filtrado de datos, reportes de métricas y exportación de gráficos/curvas de rendimiento se guardan de forma obligatoria en **`/data/export`**.
+2. **Enfoque de Secuencias Únicas:** Todo el roadmap modular (Limpieza, Generación de Decoys, Datasets, Arquitectura CNN 1D y Entrenamiento) está adaptado al enfoque simplificado y riguroso de trabajar puramente con la secuencia biológica limpia y deduplicada, eliminando metadatos para evitar sesgos y *data leakage*.
