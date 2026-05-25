@@ -2,9 +2,15 @@
 
 ## Descripción
 
-Este notebook contiene el **pipeline completo** para entrenar y usar un modelo CNN 1D en la predicción de sitios de splicing.
-
 **Archivo principal:** `01_pipeline_unificado.ipynb`
+
+Este notebook contiene la implementación lista para Google Colab del pipeline de splicing con CNN 1D.
+
+**Nota importante:** Para la versión completa con optimización evolutiva, interpretabilidad y generación de reportes, usa los módulos de Python en `../src/`:
+- `main.py` - Pipeline completo
+- `optimizer.py` - Optimización evolutiva de hiperparámetros
+- `interpretabilidad.py` - Saliency maps y PWMs
+- `generar_reporte.py` - Generación de reportes
 
 ---
 

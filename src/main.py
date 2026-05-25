@@ -62,7 +62,7 @@ class GestorPipeline:
         self.tabla_datos = None
 
     def conectar_db(self):
-        """Conecta a la base de datos de GFFUtils en data/export/."""
+        """Conecta a la base de datos en data/export/."""
         if not ARCHIVO_BASE_DATOS.exists():
             print(f"Error crítico: DB no hallada en {ARCHIVO_BASE_DATOS}.")
             sys.exit(1)

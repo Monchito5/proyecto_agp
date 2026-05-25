@@ -19,11 +19,10 @@ ETIQUETA_FRECUENCIA = "Cantidad Total"
 def realizar_analisis_general(tabla_datos: pd.DataFrame, base_datos: gffutils.FeatureDB, ruta_salida: Path):
     """
     Genera visualizaciones del estado general de la anotación y el dataset.
-    Prioriza el uso de GFFUtils para estadísticas biológicas globales.
     """
-    print("\n--- Generando Reporte Visual General (Prioridad GFFUtils) ---")
+    print("\n--- Generando Reporte Visual General ---")
     
-    # 1. Resumen de Anotación Genómica (GFFUtils)
+    # 1. Resumen de Anotación Genómica 
     print("Extrayendo estadísticas globales de la anotación...")
     tipos_biologicos = list(base_datos.featuretypes())
     conteos_globales = {}
@@ -35,7 +34,7 @@ def realizar_analisis_general(tabla_datos: pd.DataFrame, base_datos: gffutils.Fe
     
     plt.figure()
     ser_conteos.head(10).plot(kind='barh', color='teal')
-    plt.title("Gen 01: Top 10 Tipos de Elementos en la Anotación (GFFUtils)")
+    plt.title("Gen 01: Top 10 Tipos de Elementos en la Anotación")
     plt.xlabel(ETIQUETA_FRECUENCIA)
     plt.ylabel("Tipo de Feature")
     plt.tight_layout()
@@ -78,7 +77,7 @@ def realizar_analisis_especifico(tabla_datos: pd.DataFrame, base_datos: gffutils
     plt.savefig(ruta_salida / "spec_01_balance_clases.png")
     plt.close()
 
-    # 2. Distribución de cromosomas (GFFUtils como referencia global)
+    # 2. Distribución de cromosomas 
     print("Calculando distribución cromosómica global...")
     chrom_counts = {}
     for feature in base_datos.features_of_type('gene'):
@@ -87,7 +86,7 @@ def realizar_analisis_especifico(tabla_datos: pd.DataFrame, base_datos: gffutils
     ser_chroms = pd.Series(chrom_counts).sort_values(ascending=False).head(10)
     plt.figure()
     ser_chroms.plot(kind='barh', color='plum')
-    plt.title("Spec 02: Distribución Global de Genes por Cromosoma (GFFUtils)")
+    plt.title("Spec 02: Distribución Global de Genes por Cromosoma")
     plt.xlabel("Cantidad de Genes")
     plt.gca().invert_yaxis()
     plt.tight_layout()
@@ -127,7 +126,7 @@ def realizar_analisis_especifico(tabla_datos: pd.DataFrame, base_datos: gffutils
         plt.savefig(ruta_salida / "spec_05_correlacion_heatmap.png")
         plt.close()
 
-    # 6. Perfil de Longitud de Exones (Referencia GFFUtils)
+    # 6. Perfil de Longitud de Exones
     print("Extrayendo longitudes de exones para perfil genómico...")
     exon_lens = [len(f) for i, f in enumerate(base_datos.features_of_type('exon')) if i < 10000]
     plt.figure()

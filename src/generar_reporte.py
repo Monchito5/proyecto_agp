@@ -15,7 +15,7 @@ from pathlib import Path
 RAIZ_LOCAL = Path(__file__).parent.parent
 FIGURAS_DIR = RAIZ_LOCAL / "data" / "figures"
 PROCESADOS_DIR = RAIZ_LOCAL / "data" / "processed"
-ARCHIVO_SALIDA_DOCX = RAIZ_LOCAL / "Reporte_Final_CNN_Splicing.docx"
+ARCHIVO_SALIDA_DOCX = RAIZ_LOCAL / "Reporte.docx"
 
 class GeneradorDocumento:
     """
