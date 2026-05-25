@@ -16,7 +16,6 @@ from sklearn.model_selection import train_test_split
 
 # Configuración de ruta para importaciones locales
 sys.path.insert(0, str(Path(__file__).parent.absolute()))
-print(f"DEBUG sys.path: {sys.path[0]}")
 
 # Importaciones de módulos locales refactorizados
 from data_preprocessing import (
@@ -66,7 +65,6 @@ class GestorPipeline:
         """Conecta a la base de datos de GFFUtils en data/export/."""
         if not ARCHIVO_BASE_DATOS.exists():
             print(f"Error crítico: DB no hallada en {ARCHIVO_BASE_DATOS}.")
-            print("Asegúrese de ejecutar src/download_data.py.")
             sys.exit(1)
         self.conexion_db = gffutils.FeatureDB(str(ARCHIVO_BASE_DATOS))
 
@@ -75,7 +73,6 @@ class GestorPipeline:
         print("\n=== ETAPA 1: PREPROCESAMIENTO ===")
         self.conectar_db()
         
-        # Mapeo de niveles de límite
         limite_genes = None
         if limite == 1000: limite_genes = 1000
         elif limite == 5000: limite_genes = 5000
@@ -100,30 +97,34 @@ class GestorPipeline:
         self.tabla_datos = pd.concat([reales_limpios, neg_limpios], ignore_index=True)
         self.tabla_datos = self.tabla_datos.sample(frac=1, random_state=SEMILLA_ALEATORIA).reset_index(drop=True)
         self.tabla_datos.to_csv(ARCHIVO_DATASET_CONSOLIDADO, index=False)
-        print(f"✓ Dataset consolidado generado en: {RUTA_PROCESADOS.name}")
+        print(f"✓ Dataset consolidado generado.")
         self.tabla_datos = None 
 
     def ejecutar_eda(self):
         """Genera reportes visuales en data/figures/."""
         print("\n=== ETAPA 2: ANÁLISIS EXPLORATORIO DE DATOS ===")
         if not ARCHIVO_DATASET_CONSOLIDADO.exists():
-            print("Error: Dataset no encontrado. Ejecute preprocesamiento.")
+            print("Error: Dataset no encontrado.")
             return
         
         self.tabla_datos = pd.read_csv(ARCHIVO_DATASET_CONSOLIDADO)
         self.conectar_db()
         
-        # Limpiar figuras previas
         for figura in RUTA_FIGURAS.glob("*.png"):
-            figura.unlink()
+            try: figura.unlink()
+            except Exception: pass
 
+        # Asegurar firmas correctas (3 argumentos)
         realizar_analisis_general(self.tabla_datos, self.conexion_db, RUTA_FIGURAS)
         realizar_analisis_especifico(self.tabla_datos, self.conexion_db, RUTA_FIGURAS)
-        print(f"✓ Visualizaciones actualizadas en: {RUTA_FIGURAS.name}")
+        print(f"✓ Visualizaciones actualizadas.")
 
     def particionar(self):
         """Divide el dataset en entrenamiento y prueba."""
         print("\n=== ETAPA 3: PARTICIÓN ESTRATIFICADA ===")
+        if not ARCHIVO_DATASET_CONSOLIDADO.exists():
+            print("Error: Dataset no encontrado.")
+            return
         self.tabla_datos = pd.read_csv(ARCHIVO_DATASET_CONSOLIDADO)
         
         entreno, prueba = train_test_split(
@@ -132,7 +133,7 @@ class GestorPipeline:
         )
         entreno.to_csv(ARCHIVO_TRAIN, index=False)
         prueba.to_csv(ARCHIVO_TEST, index=False)
-        print(f"✓ Partición: Entrenamiento({len(entreno)}), Prueba({len(prueba)})")
+        print(f"✓ Partición completada.")
 
     def optimizar(self):
         """Búsqueda de hiperparámetros mediante Evolución Diferencial."""
@@ -147,18 +148,17 @@ class GestorPipeline:
         
         config = ConfiguracionEvolutiva(tamano_poblacion=8, total_generaciones=10)
         resultado = evolucion_diferencial(opt.funcion_aptitud, limites, config)
-        print(f"\n✓ Optimización completada. Mejor error: {resultado.mejor_aptitud:.4f}")
+        print(f"\n✓ Optimización completada.")
         np.save(RUTA_PROCESADOS / "hiperparametros_optimos.npy", resultado.mejor_vector)
 
     def ejecutar_interpretacion(self):
         """Genera reportes de interpretabilidad del modelo."""
         print("\n=== ETAPA 5: ANÁLISIS DE INTERPRETABILIDAD ===")
         if not ARCHIVO_TEST.exists():
-            print("Error: Dataset de prueba no hallado para interpretación.")
+            print("Error: Dataset de prueba no hallado.")
             return
             
         from model import RedNeuronalSplicing
-        # Cargar hiperparámetros óptimos si existen para instanciar el modelo correcto
         ruta_hparams = RUTA_PROCESADOS / "hiperparametros_optimos.npy"
         if ruta_hparams.exists():
             v_opt = np.load(ruta_hparams)
@@ -170,10 +170,15 @@ class GestorPipeline:
 
         ruta_pesos = RUTA_EXPORT / "best_model.pth"
         if not ruta_pesos.exists():
-            print("Error: No se encontró el modelo entrenado (best_model.pth).")
+            print("Error: Modelo no hallado.")
             return
             
-        checkpoint = torch.load(ruta_pesos, map_location='cpu')
+        # Carga robusta para PyTorch 2.6+
+        try:
+            checkpoint = torch.load(str(ruta_pesos), map_location='cpu', weights_only=False)
+        except Exception:
+            checkpoint = torch.load(str(ruta_pesos), map_location='cpu')
+            
         if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
             modelo.load_state_dict(checkpoint['model_state_dict'])
         else:
@@ -181,25 +186,14 @@ class GestorPipeline:
             
         generar_reporte_interpretabilidad(modelo, ARCHIVO_TEST, RUTA_FIGURAS / "interpretability")
 
-    def generar_reporte(self):
-        """Crea el documento DOCX final."""
-        print("\n=== ETAPA 6: GENERACIÓN DE REPORTE FINAL ===")
-        try:
-            gestor = GeneradorDocumento()
-            gestor.guardar_reporte()
-        except Exception as error_rep:
-            print(f"Error al generar reporte: {error_rep}")
-
     def ejecutar_entrenamiento(self):
         """Etapa de entrenamiento final con hiperparámetros óptimos."""
         print("\n=== ETAPA: ENTRENAMIENTO FINAL ===")
-        if not ARCHIVO_TRAIN.exists():
-            self.particionar()
+        if not ARCHIVO_TRAIN.exists(): self.particionar()
             
         from train import inicializar_cargadores_datos, ejecutar_entrenamiento_robusto
         from model import RedNeuronalSplicing
         
-        # Cargar configuración óptima
         ruta_hparams = RUTA_PROCESADOS / "hiperparametros_optimos.npy"
         if ruta_hparams.exists():
             v_opt = np.load(ruta_hparams)
@@ -207,32 +201,29 @@ class GestorPipeline:
             abandono = v_opt[1]
             filtros = [int(v_opt[2]), int(v_opt[3]), int(v_opt[4])]
             kernels = [2*int(v_opt[5])+1, 2*int(v_opt[6])+1, 2*int(v_opt[7])+1]
-            print(f"Usando hiperparámetros óptimos: LR={tasa_lr:.5f}, Filtros={filtros}")
             modelo = RedNeuronalSplicing(filtros, kernels, abandono, abandono)
         else:
-            print("Aviso: Hiperparámetros no hallados. Usando arquitectura base.")
             modelo = RedNeuronalSplicing()
             tasa_lr = 0.001
             
         c_train, c_val = inicializar_cargadores_datos(ARCHIVO_TRAIN, ARCHIVO_TEST)
-        # Adaptar train_func para aceptar modelo y LR si es necesario, 
-        # o simplemente usar la lógica de train.py refactorizada.
-        from train import ejecutar_entrenamiento_robusto
         ejecutar_entrenamiento_robusto(modelo, c_train, c_val, lr=tasa_lr)
 
+    def generar_reporte(self):
+        """Crea el documento DOCX final."""
+        print("\n=== ETAPA 6: GENERACIÓN DE REPORTE FINAL ===")
+        try:
+            GeneradorDocumento().guardar_reporte()
+        except Exception as e:
+            print(f"Error al generar reporte: {e}")
+
 def mostrar_menu():
-    """Muestra el menú interactivo."""
-    print("\n" + "="*55 + "\n      PIPELINE DE PREDICCIÓN DE SPLICING (COLAB READY)\n" + "="*55)
+    print("\n" + "="*55 + "\n      PIPELINE DE PREDICCIÓN DE SPLICING\n" + "="*55)
     print("1. Ejecutar TODO el Pipeline")
-    print("2. Etapa 1: Preprocesamiento")
-    print("3. Etapa 2: Análisis Exploratorio (EDA)")
-    print("4. Etapa 3: Partición de Datos")
-    print("5. Etapa 4: Optimización Evolutiva")
-    print("6. Etapa 5: Entrenamiento Final")
-    print("7. Etapa 6: Interpretación de Motivos")
-    print("8. Etapa 7: Generar Reporte DOCX")
-    print("9. Salir")
-    return input("Opción [1-9]: ")
+    print("2. Preprocesamiento | 3. EDA | 4. Partición")
+    print("5. Optimización | 6. Entrenamiento | 7. Interpretación")
+    print("8. Reporte DOCX | 9. Salir")
+    return input("Seleccione una opción: ")
 
 def principal():
     gestor = GestorPipeline()
@@ -243,8 +234,7 @@ def principal():
         args = parser.parse_args()
         if args.paso == 'todo':
             gestor.preprocesar(args.limite); gestor.particionar(); 
-            gestor.ejecutar_eda(); gestor.optimizar(); 
-            gestor.ejecutar_entrenamiento();
+            gestor.ejecutar_eda(); gestor.optimizar(); gestor.ejecutar_entrenamiento();
             gestor.ejecutar_interpretacion(); gestor.generar_reporte()
         elif args.paso == 'pre': gestor.preprocesar(args.limite)
         elif args.paso == 'eda': gestor.ejecutar_eda()
@@ -259,9 +249,8 @@ def principal():
         opcion = mostrar_menu()
         if opcion == '1':
             lim = int(input("Límite: ") or 1000)
-            gestor.preprocesar(lim); gestor.particionar(); 
-            gestor.ejecutar_eda(); gestor.optimizar(); 
-            gestor.ejecutar_entrenamiento();
+            gestor.preprocesar(lim); gestor.particionar(); gestor.ejecutar_eda();
+            gestor.optimizar(); gestor.ejecutar_entrenamiento();
             gestor.ejecutar_interpretacion(); gestor.generar_reporte()
         elif opcion == '2': gestor.preprocesar(int(input("Límite: ") or 1000))
         elif opcion == '3': gestor.ejecutar_eda()
@@ -271,7 +260,6 @@ def principal():
         elif opcion == '7': gestor.ejecutar_interpretacion()
         elif opcion == '8': gestor.generar_reporte()
         elif opcion == '9': break
-        else: print("Opción no válida.")
 
 if __name__ == "__main__":
     principal()

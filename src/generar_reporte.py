@@ -72,15 +72,14 @@ class GeneradorDocumento:
 
     def escribir_resultados(self):
         self.agregar_titulo("3. Resultados")
-        self.agregar_parrafo("Visualizaciones del análisis detallado (Puntos 1-6):")
+        self.agregar_parrafo("Visualizaciones del análisis detallado y desempeño del modelo:")
         
         figuras_lista = [
-            ("spec_01_balance_clases.png", "Punto 1: Balance de clases."),
-            ("spec_02_dist_cromosomas.png", "Punto 2: Distribución por cromosoma."),
-            ("spec_03_composicion_global.png", "Punto 3: Composición nucleotídica global."),
-            ("spec_04_gc_content_violin.png", "Punto 4: Contenido GC por tipo de sitio."),
-            ("spec_05_correlacion_heatmap.png", "Punto 5: Mapa de calor de correlación."),
-            ("spec_06_longitud_exones.png", "Punto 6: Perfil de longitud de exones.")
+            ("gen_01_composicion_features.png", "Composición de la anotación genómica."),
+            ("spec_01_balance_clases.png", "Balance de clases (Real vs Señuelo)."),
+            ("spec_04_gc_content_violin.png", "Distribución de Contenido GC."),
+            ("entrenamiento_curvas_desempeño.png", "Curvas de Aprendizaje (Loss, Acc, F1)."),
+            ("evaluacion_final_roc.png", "Curva ROC y AUC final.")
         ]
         
         for nombre_img, descripcion_img in figuras_lista:
