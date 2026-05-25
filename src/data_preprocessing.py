@@ -18,7 +18,7 @@ def obtener_sitios_reales(base_datos: gffutils.FeatureDB, limite_genes: Optional
         limite_genes (int): Cantidad máxima de genes a procesar.
         
     Retorna:
-        pd.DataFrame: Tabla con columnas [chrom, pos, strand, label].
+        pd.DataFrame: Tabla con columnas [chrom, pos, strand, label, gene_id, gene_name].
     """
     lista_sitios = []
     coleccion_genes = base_datos.features_of_type('gene')
@@ -27,6 +27,10 @@ def obtener_sitios_reales(base_datos: gffutils.FeatureDB, limite_genes: Optional
     for i, objeto_gene in enumerate(coleccion_genes):
         if limite_genes and i >= limite_genes:
             break
+        
+        # Extraer metadata del gen padre
+        gene_id = objeto_gene.attributes.get('gene_id', ['unknown'])[0]
+        gene_name = objeto_gene.attributes.get('gene_name', ['unknown'])[0]
         
         for objeto_transcrito in base_datos.children(objeto_gene, featuretype='transcript'):
             lista_exones = list(base_datos.children(objeto_transcrito, featuretype='exon', order_by='start'))
@@ -39,7 +43,9 @@ def obtener_sitios_reales(base_datos: gffutils.FeatureDB, limite_genes: Optional
                     'chrom': objeto_exon.chrom,
                     'pos': posicion_donante,
                     'strand': objeto_exon.strand,
-                    'label': 1
+                    'label': 1,
+                    'gene_id': gene_id,
+                    'gene_name': gene_name
                 })
     
     tabla_datos = pd.DataFrame(lista_sitios)
@@ -77,12 +83,28 @@ def generar_señuelos_simulados(cantidad_objetivo: int, longitud_total: int = 20
             lista_decoys.append(cadena_final)
             
     return pd.DataFrame({
-        'chrom': 'simulado', 'pos': 0, 'strand': '+', 'label': 0, 'sequence': lista_decoys
+        'chrom': 'simulado', 'pos': 0, 'strand': '+', 'label': 0, 
+        'gene_id': 'simulado', 'gene_name': 'simulado', 'sequence': lista_decoys
     })
 
-def obtener_sitios_señuelo(ruta_fasta: Path, cantidad: int, tabla_reales: pd.DataFrame) -> Optional[pd.DataFrame]:
+def obtener_sitios_señuelo(
+    ruta_fasta: Path, 
+    cantidad: int, 
+    tabla_reales: pd.DataFrame,
+    modo_dificil: bool = False
+) -> Optional[pd.DataFrame]:
     """
     Busca sitios GT en el genoma real que no están anotados como funcionales.
+    
+    Parámetros:
+        ruta_fasta (Path): Ruta al archivo FASTA del genoma.
+        cantidad (int): Cantidad de señuelos a generar.
+        tabla_reales (pd.DataFrame): Tabla de sitios reales para evitar solapamientos.
+        modo_dificil (bool): Si es True activa Hard-Negative Mining, buscando
+                             GTs cercanos a sitios reales o en intrones adyacentes.
+    
+    Retorna:
+        pd.DataFrame: Tabla con sitios señuelo y sus metadatos.
     """
     if not ruta_fasta.exists():
         return None
@@ -97,6 +119,11 @@ def obtener_sitios_señuelo(ruta_fasta: Path, cantidad: int, tabla_reales: pd.Da
     lista_negativos = []
     nombres_cromosomas = [c for c in objeto_genoma.keys() if '_' not in c and len(c) < 6]
     
+    if modo_dificil:
+        # Hard-Negative Mining: buscar GTs cercanos a sitios reales (contexto similar)
+        from scipy.spatial import cKDTree
+        coord_reales = tabla_reales[['chrom', 'pos']].values
+    
     intentos_realizados = 0
     while len(lista_negativos) < cantidad and intentos_realizados < cantidad * 50:
         intentos_realizados += 1
@@ -104,14 +131,28 @@ def obtener_sitios_señuelo(ruta_fasta: Path, cantidad: int, tabla_reales: pd.Da
         longitud_chrom = len(objeto_genoma[nombre_chrom])
         if longitud_chrom <= 200: continue
         
-        pos_azar = random.randint(101, longitud_chrom - 101)
+        # Si modo_dificil, muestrear preferentemente cerca de sitios reales
+        if modo_dificil and not tabla_reales.empty:
+            cromosomas_reales = tabla_reales[tabla_reales['chrom'] == nombre_chrom]
+            if not cromosomas_reales.empty:
+                # Elegir un sitio real aleatorio del mismo cromosoma
+                sitio_real = cromosomas_reales.sample(1).iloc[0]
+                # Posición cercana al sitio real (±100pb)
+                pos_centro = sitio_real['pos']
+                pos_azar = random.randint(max(101, pos_centro - 100), min(longitud_chrom - 101, pos_centro + 100))
+            else:
+                pos_azar = random.randint(101, longitud_chrom - 101)
+        else:
+            pos_azar = random.randint(101, longitud_chrom - 101)
+        
         dinucleotido = objeto_genoma[nombre_chrom][pos_azar : pos_azar + 2].seq.upper()
         sentido_hebra = random.choice(['+', '-'])
         
         if dinucleotido == 'GT':
             if (nombre_chrom, pos_azar, sentido_hebra) not in set_reales:
                 lista_negativos.append({
-                    'chrom': nombre_chrom, 'pos': pos_azar, 'strand': sentido_hebra, 'label': 0
+                    'chrom': nombre_chrom, 'pos': pos_azar, 'strand': sentido_hebra, 'label': 0,
+                    'gene_id': 'unknown', 'gene_name': 'unknown'
                 })
     
     return pd.DataFrame(lista_negativos) if lista_negativos else None

@@ -26,6 +26,7 @@ from optimizer import (
     evolucion_diferencial, 
     ConfiguracionEvolutiva
 )
+from interpretabilidad import interpretar_modelo
 
 # --- Constantes Simbólicas de Rutas ---
 RAIZ = Path(__file__).parent.parent
@@ -63,16 +64,21 @@ class GestorPipeline:
             sys.exit(1)
         self.conexion_db = gffutils.FeatureDB(str(ARCHIVO_BASE_DATOS))
 
-    def preprocesar(self, limite: int = 0):
-        """Etapa de extracción y limpieza masiva."""
+    def preprocesar(self, limite: int = 0, hard_negative: bool = False):
+        """Etapa de extracción y limpieza masiva.
+        
+        Parámetros:
+            limite (int): Límite de genes a procesar (0 para todos).
+            hard_negative (bool): Activa Hard-Negative Mining para señuelos.
+        """
         print("\n=== ETAPA 1: PREPROCESAMIENTO ===")
         self.conectar_db()
         reales = obtener_sitios_reales(self.conexion_db, limite_genes=(None if limite == 0 else limite))
         reales_limpios = extraer_y_limpiar_secuencias(reales, ARCHIVO_GENOMA_FASTA)
         
         objetivo = len(reales_limpios)
-        print(f"Buscando {objetivo} señuelos...")
-        negativos = obtener_sitios_señuelo(ARCHIVO_GENOMA_FASTA, objetivo, reales_limpios)
+        print(f"Buscando {objetivo} señuelos (Hard-Negative={'Sí' if hard_negative else 'No'})...")
+        negativos = obtener_sitios_señuelo(ARCHIVO_GENOMA_FASTA, objetivo, reales_limpios, modo_dificil=hard_negative)
         
         if negativos is not None:
             neg_limpios = extraer_y_limpiar_secuencias(negativos, ARCHIVO_GENOMA_FASTA)
@@ -142,19 +148,46 @@ class GestorPipeline:
         realizar_analisis_especifico(self.tabla_datos, self.conexion_db, RUTA_FIGURAS)
         print(f"✓ Visualizaciones generadas en: {RUTA_FIGURAS.name}")
 
+    def interpretar(self):
+        """Ejecuta el pipeline de interpretabilidad sobre el modelo entrenado."""
+        import torch
+        from model import RedNeuronalSplicing
+        
+        print("\n=== ETAPA: INTERPRETABILIDAD DEL MODELO ===")
+        ruta_modelo = RUTA_EXPORT / "best_model.pth"
+        if not ruta_modelo.exists():
+            print("Error: Modelo no encontrado. Ejecute el entrenamiento primero.")
+            return
+        
+        if not ARCHIVO_TEST.exists():
+            print("Error: Dataset de prueba no encontrado. Ejecute '../main.py --paso todo' primero.")
+            return
+            
+        modelo = RedNeuronalSplicing()
+        modelo.load_state_dict(torch.load(ruta_modelo, map_location='cpu'))
+        
+        # Llamar al módulo de interpretabilidad
+        interpretar_modelo(
+            modelo=modelo,
+            ruta_test_csv=ARCHIVO_TEST,
+            ruta_salida_figuras=RUTA_FIGURAS / "interpretabilidad"
+        )
+
 def principal():
     """Función de entrada al programa principal."""
     parser = argparse.ArgumentParser(description="Pipeline Splicing CNN Production")
-    parser.add_argument("--paso", choices=['todo', 'pre', 'eda', 'opt', 'part'], default='todo')
-    parser.add_argument("--limite", type=int, default=0) 
+    parser.add_argument("--paso", choices=['todo', 'pre', 'eda', 'opt', 'part', 'int'], default='todo')
+    parser.add_argument("--limite", type=int, default=0)
+    parser.add_argument("--hard-negative", action="store_true", help="Activa Hard-Negative Mining para señuelos de alta dificultad.")
     
     args = parser.parse_args()
     gestor = GestorPipeline()
 
-    if args.paso in ['todo', 'pre']: gestor.preprocesar(args.limite)
+    if args.paso in ['todo', 'pre']: gestor.preprocesar(args.limite, args.hard_negative)
     if args.paso in ['todo', 'part']: gestor.particionar()
     if args.paso in ['todo', 'eda']: gestor.ejecutar_eda()
     if args.paso == 'opt': gestor.optimizar()
+    if args.paso == 'int': gestor.interpretar()
 
 if __name__ == "__main__":
     principal()
