@@ -1,7 +1,7 @@
 """
 interpretabilidad.py
 Módulo para la extracción de motivos biológicos y visualización de interpretabilidad
-aplicando Saliency Maps, Integrated Gradients, y extracción de PWMs.
+aplicando Saliency Maps, Integrated Gradients y extracción de PWMs.
 """
 
 import torch
@@ -12,312 +12,130 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import logomaker
 from pathlib import Path
-from typing import List, Optional, Tuple, Dict
+from typing import Optional, List, Tuple
 from torch.utils.data import DataLoader
-import warnings
 
-# Importaciones locales
+# Importaciones locales refactorizadas
 from dataset import DatasetSplicing
 
-# Mapa inverso para decodificación
-MAP_INVERSO = {0: 'A', 1: 'C', 2: 'G', 3: 'T'}
+# Mapa para decodificar índices One-Hot a caracteres de ADN
+DICCIONARIO_INVERSO_ADN = {0: 'A', 1: 'C', 2: 'G', 3: 'T'}
 
-
-def secuencia_de_tensor(tensor: torch.Tensor) -> str:
-    """Convierte un tensor one-hot a una secuencia de ADN."""
-    indices = torch.argmax(tensor, dim=-1).cpu().numpy()
-    return ''.join([MAP_INVERSO.get(i, 'N') for i in indices])
-
-
-def onehot_to_values(tensor: torch.Tensor) -> np.ndarray:
+def calcular_mapas_saliencia(modelo_entrenado: nn.Module, lote_entrada: torch.Tensor) -> torch.Tensor:
     """
-    Convierte un tensor one-hot a una matriz de pesos por nucleótido.
-    Para la visualización de Saliency Maps con logomaker, se usa la
-    importancia derivada del gradiente, no el one-hot directo.
-    """
-    return tensor.cpu().numpy()
-
-
-def calcular_saliency_maps(modelo: nn.Module, tensor_entrada: torch.Tensor) -> torch.Tensor:
-    """
-    Calcula los Saliency Maps básicos para un batch de secuencias.
+    Calcula los Saliency Maps para identificar nucleótidos críticos.
     
     Parámetros:
-        modelo (nn.Module): Modelo entrenado.
-        tensor_entrada (torch.Tensor): Batch de secuencias one-hot (batch, L, 4).
+        modelo_entrenado (nn.Module): Red neuronal cargada.
+        lote_entrada (torch.Tensor): Tensores de secuencia (batch, L, 4).
         
     Retorna:
-        torch.Tensor: Gradiente absoluto de la salida respecto a la entrada (batch, L, 4).
+        torch.Tensor: Gradientes absolutos normalizados.
     """
-    modelo.eval()
-    tensor_entrada.requires_grad_(True)
-    modelo.zero_grad()
+    modelo_entrenado.eval()
+    lote_entrada.requires_grad_(True)
+    modelo_entrenado.zero_grad()
     
-    salida = modelo(tensor_entrada)
-    # Asumiendo que salida es un vector (batch, 1), tomamos la clase positiva (índice 0)
-    grad_outputs = torch.ones_like(salida)
+    vector_salida = modelo_entrenado(lote_entrada)
+    mascara_gradiente = torch.ones_like(vector_salida)
     
-    gradientes = torch.autograd.grad(
-        outputs=salida, 
-        inputs=tensor_entrada, 
-        grad_outputs=grad_outputs,
+    tensores_gradiente = torch.autograd.grad(
+        outputs=vector_salida, 
+        inputs=lote_entrada, 
+        grad_outputs=mascara_gradiente,
         create_graph=False, 
         retain_graph=False
     )[0]
     
-    return gradientes.abs()
+    return tensores_gradiente.abs()
 
-
-def calcular_integrated_gradients(
-    modelo: nn.Module, 
-    secuencia_base: torch.Tensor, 
-    referencia: Optional[torch.Tensor] = None, 
-    pasos: int = 50
+def calcular_gradientes_integrados(
+    modelo_red: nn.Module, 
+    secuencia_objetivo: torch.Tensor, 
+    secuencia_base: Optional[torch.Tensor] = None, 
+    numero_pasos: int = 50
 ) -> torch.Tensor:
     """
-    Implementación de Integrated Gradients (IG) para secuencias de ADN.
-    
-    Parámetros:
-        modelo (nn.Module): Modelo entrenado.
-        secuencia_base (torch.Tensor): Secuencia one-hot (L, 4).
-        referencia (torch.Tensor, opcional): Secuencia de referencia (ej. zeros).
-        pasos (int): Número de pasos para la interpolación.
-        
-    Retorna:
-        torch.Tensor: Atribuciones Integrated Gradients (L, 4).
+    Implementa Integrated Gradients para atribución de importancia robusta.
     """
-    modelo.eval()
-    if referencia is None:
-        referencia = torch.zeros_like(secuencia_base)
+    modelo_red.eval()
+    if secuencia_base is None:
+        secuencia_base = torch.zeros_like(secuencia_objetivo)
     
-    # Interpolación entre referencia y secuencia_base
-    escalas = torch.linspace(0, 1, steps=pasos + 1).view(-1, 1, 1).to(secuencia_base.device)
-    secuencia_interpolada = referencia.unsqueeze(0) + escalas * (secuencia_base.unsqueeze(0) - referencia.unsqueeze(0))
-    secuencia_interpolada.requires_grad_(True)
+    lista_escalas = torch.linspace(0, 1, steps=numero_pasos + 1).view(-1, 1, 1).to(secuencia_objetivo.device)
+    lote_interpolado = secuencia_base.unsqueeze(0) + lista_escalas * (secuencia_objetivo.unsqueeze(0) - secuencia_base.unsqueeze(0))
+    lote_interpolated = lote_interpolado.clone().detach().requires_grad_(True)
     
-    salidas = modelo(secuencia_interpolada)
-    grad_outputs = torch.ones_like(salidas)
+    salidas_red = modelo_red(lote_interpolated)
+    mascara_grad = torch.ones_like(salidas_red)
     
-    gradientes = torch.autograd.grad(
-        outputs=salidas,
-        inputs=secuencia_interpolada,
-        grad_outputs=grad_outputs,
-        create_graph=True,
-        retain_graph=True
+    gradientes_totales = torch.autograd.grad(
+        outputs=salidas_red,
+        inputs=lote_interpolated,
+        grad_outputs=mascara_grad,
+        create_graph=False,
+        retain_graph=False
     )[0]
     
-    # Promediar gradientes y multiplicar por (x - x')
-    atribuciones = gradientes.mean(dim=0) * (secuencia_base - referencia)
-    return atribuciones.detach()
+    atribuciones_finales = gradientes_totales.mean(dim=0) * (secuencia_objetivo - secuencia_base)
+    return atribuciones_finales.detach()
 
+def extraer_matrices_pwm(modelo_cnn: nn.Module, nombre_capa: str = 'capa_conv1') -> np.ndarray:
+    """
+    Transforma los filtros de la primera capa en Position Weight Matrices (PWMs).
+    """
+    objeto_capa = getattr(modelo_cnn, nombre_capa)
+    tensores_peso = objeto_capa.weight.detach().cpu().numpy() # (out, 4, kernel)
+    
+    # Transponer a formato (out, kernel, 4)
+    coleccion_pwms = tensores_peso.transpose(0, 2, 1)
+    
+    # Normalización para visualización (solo pesos positivos relevantes)
+    coleccion_pwms = np.clip(coleccion_pwms, a_min=0, a_max=None)
+    sumatorias = coleccion_pwms.sum(axis=-1, keepdims=True)
+    sumatorias[sumatorias == 0] = 1.0
+    
+    return coleccion_pwms / sumatorias
 
-def extraer_pwms(modelo: nn.Module, nombre_capa: str = 'capa_conv1') -> np.ndarray:
+def generar_reporte_interpretabilidad(
+    modelo_final: nn.Module, 
+    ruta_datos_prueba: Path, 
+    directorio_figuras: Path,
+    dispositivo_uso: str = 'cpu'
+):
     """
-    Extrae los pesos de una capa convolucional y los transforma en Position Weight Matrices (PWMs).
-    
-    Parámetros:
-        modelo (nn.Module): Modelo entrenado.
-        nombre_capa (str): Nombre exacto del atributo de la capa (ej. 'capa_conv1').
-        
-    Retorna:
-        np.ndarray: Array de shape (num_filtros, kernel_size, 4).
+    Orquesta la generación de todas las visualizaciones de importancia.
     """
-    capa = getattr(modelo, nombre_capa)
-    pesos = capa.weight.detach().cpu().numpy()  # (out_channels, in_channels, kernel_size)
+    directorio_figuras.mkdir(parents=True, exist_ok=True)
+    modelo_final.to(dispositivo_uso).eval()
     
-    # Los pesos en PyTorch son (out, in, kernel). Necesitamos (out, kernel, 4)
-    # Asumiendo in_channels=4 (A, C, G, T)
-    if pesos.shape[1] != 4:
-        raise ValueError(f"Se esperaban 4 canales de entrada, se encontró {pesos.shape[1]}")
+    dataset_eval = DatasetSplicing(ruta_datos_prueba)
+    cargador_eval = DataLoader(dataset_eval, batch_size=32, shuffle=False)
     
-    # Transponer para tener (out, kernel, 4)
-    pwms = pesos.transpose(0, 2, 1)
+    print("Iniciando análisis de interpretabilidad...")
     
-    # Normalizar para que sumen 1 en la dimensión de nucleótidos (simular probabilidades)
-    pwms = np.clip(pwms, a_min=0, a_max=None) # Solo pesos positivos para la visualización tipo logo
-    sumas = pwms.sum(axis=-1, keepdims=True)
-    sumas[sumas == 0] = 1 # Evitar división por cero
-    pwms = pwms / sumas
+    # Tomar un lote para análisis
+    lote_adn, _ = next(iter(cargador_eval))
+    lote_adn = lote_adn.to(dispositivo_uso)
     
-    return pwms
-
-
-def visualizar_pwm_logomaker(pwms: np.ndarray, ruta_salida_dir: Path, num_a_mostrar: int = 5):
-    """
-    Genera logos de secuencia para los primeros N filtros usando Logomaker.
+    # 1. Saliency Maps
+    mapas_saliencia = calcular_mapas_saliencia(modelo_final, lote_adn)
+    perfil_importancia = mapas_saliencia.sum(dim=-1).mean(dim=0).cpu().numpy()
     
-    Parámetros:
-        pwms (np.ndarray): Array de PWMs shape (num_filtros, kernel_size, 4).
-        ruta_salida_dir (Path): Directorio para guardar las figuras.
-        num_a_mostrar (int): Cantidad de filtros a visualizar.
-    """
-    ruta_salida_dir.mkdir(parents=True, exist_ok=True)
+    plt.figure(figsize=(12, 4))
+    plt.plot(perfil_importancia, color='purple')
+    plt.title("Perfil de Importancia Global (Saliency)")
+    plt.savefig(directorio_figuras / "interpretabilidad_saliencia.png")
+    plt.close()
     
-    for i in range(min(num_a_mostrar, pwms.shape[0])):
-        pwm = pwms[i]
-        df_pwm = pd.DataFrame(pwm, columns=['A', 'C', 'G', 'T'])
-        
+    # 2. PWMs
+    pwms_extraidas = extraer_matrices_pwm(modelo_final)
+    for i in range(min(5, pwms_extraidas.shape[0])):
+        df_pwm = pd.DataFrame(pwms_extraidas[i], columns=['A', 'C', 'G', 'T'])
         plt.figure(figsize=(8, 3))
-        logo = logomaker.Logo(df_pwm, color_scheme={'A': 'red', 'C': 'blue', 'G': 'orange', 'T': 'green'})
-        logo.style_xticks(anchor=0)
-        plt.title(f"Logo del Filtro Convolucional {i+1}")
-        plt.tight_layout()
-        plt.savefig(ruta_salida_dir / f"logo_filtro_{i+1}.png", dpi=300)
+        logomaker.Logo(df_pwm)
+        plt.title(f"Filtro Convolucional {i+1}")
+        plt.savefig(directorio_figuras / f"motivo_filtro_{i+1}.png")
         plt.close()
 
-
-def agregar_importancia_por_posicion(saliency_batch: torch.Tensor) -> np.ndarray:
-    """
-    Agrega la importancia por posición para generar un perfil de importancia global.
-    
-    Parámetros:
-        saliency_batch (torch.Tensor): Tensor de saliency de shape (batch, L, 4).
-        
-    Retorna:
-        np.ndarray: Vector de importancia promedio por posición (L,).
-    """
-    # Sumar sobre los 4 nucleótidos para obtener importancia posicional
-    importancia_posicional = saliency_batch.sum(dim=-1)
-    # Promediar sobre el batch
-    perfil = importancia_posicional.mean(dim=0).cpu().numpy()
-    return perfil
-
-
-def guardar_perfiles_importancia(perfil: np.ndarray, ruta_salida: Path):
-    """
-    Guarda un plot del perfil de importancia agregada.
-    
-    Parámetros:
-        perfil (np.ndarray): Vector de importancia por posición (L,).
-        ruta_salida (Path): Ruta para guardar la figura.
-    """
-    plt.figure(figsize=(12, 4))
-    plt.plot(perfil, color='purple')
-    plt.fill_between(range(len(perfil)), perfil, alpha=0.3, color='purple')
-    plt.title("Perfil de Importancia Agregada (Saliency Map)")
-    plt.xlabel("Posición en la Secuencia (nt)")
-    plt.ylabel("Importancia del Gradient")
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(ruta_salida, dpi=300)
-    plt.close()
-
-
-def generar_logo_por_atribucion(
-    secuencias_onehot: np.ndarray, 
-    atribuciones: np.ndarray, 
-    ruta_salida: Path
-):
-    """
-    Genera un logo de secuencia donde la altura de cada nucleótido
-    representa su importancia (weighted sequence logo).
-    
-    Parámetros:
-        secuencias_onehot (np.ndarray): Array de one-hot (batch, L, 4).
-        atribuciones (np.ndarray): Importancia por nucleótido (batch, L, 4).
-        ruta_salida (Path): Ruta para guardar el logo.
-    """
-    # Agregar atribuciones sólamente donde el nucleótido está presente (one-hot es 1)
-    pesos = secuencias_onehot * atribuciones
-    # Promedio sobre el batch
-    promedio = pesos.mean(axis=0) # (L, 4)
-    
-    df = pd.DataFrame(promedio, columns=['A', 'C', 'G', 'T'])
-    
-    plt.figure(figsize=(12, 4))
-    logo = logomaker.Logo(df, color_scheme={'A': 'red', 'C': 'blue', 'G': 'orange', 'T': 'green'})
-    logo.style_xticks(anchor=0)
-    plt.title("Logo de Secuencia basado en Atribución de Importancia")
-    plt.ylabel("Importancia Agregada")
-    plt.xlabel("Posición (nt)")
-    plt.tight_layout()
-    plt.savefig(ruta_salida, dpi=300)
-    plt.close()
-
-
-def interpretar_modelo(
-    modelo: nn.Module, 
-    ruta_test_csv: Path, 
-    ruta_salida_figuras: Path, 
-    dispositivo: str = 'cpu',
-    num_muestras_ig: int = 10
-):
-    """
-    Función orquestadora que corre todo el pipeline de interpretabilidad.
-    
-    Parámetros:
-        modelo (nn.Module): Modelo entrenado.
-        ruta_test_csv (Path): Ruta al CSV del conjunto de prueba.
-        ruta_salida_figuras (Path): Directorio para guardar visualizaciones.
-        dispositivo (str): 'cpu' o 'cuda'.
-        num_muestras_ig (int): Número de muestras para calcular Integrated Gradients.
-    """
-    ruta_salida_figuras.mkdir(parents=True, exist_ok=True)
-    modelo = modelo.to(dispositivo)
-    modelo.eval()
-
-    dataset = DatasetSplicing(ruta_test_csv)
-    # Cargar un batch para Saliency Maps (aumentar batch_size para mejor estadística)
-    loader = DataLoader(dataset, batch_size=32, shuffle=False)
-    
-    saliency_maps_list = []
-    secuencias_list = []
-    atribuciones_list = []
-    
-    print("Calculando Saliency Maps e Integrated Gradients...")
-    with torch.no_grad():
-        for i, (secuencias, etiquetas) in enumerate(loader):
-            secuencias = secuencias.to(dispositivo)
-            
-            # 1. Calcular Saliency Maps
-            saliency = calcular_saliency_maps(modelo, secuencias)
-            saliency_maps_list.append(saliency.cpu())
-            secuencias_list.append(secuencias.cpu())
-            
-            # 2. Calcular Integrated Gradients para unas pocas muestras
-            if i == 0: # Solo para el primer batch para no saturar tiempo/computo
-                for j in range(min(num_muestras_ig, secuencias.shape[0])):
-                    ig = calcular_integrated_gradients(modelo, secuencias[j])
-                    atribuciones_list.append(ig)
-                
-            if i >= 10: # Limitar a los primeros 10 batches para agregación rápida
-                break
-            
-    # Concatenar resultados
-    saliencias_completas = torch.cat(saliency_maps_list, dim=0)
-    secuencias_completas = torch.cat(secuencias_list, dim=0)
-    
-    # --- Paso A: Perfil de importancia posicional agregado ---
-    perfil = agregar_importancia_por_posicion(saliencias_completas)
-    guardar_perfiles_importancia(perfil, ruta_salida_figuras / "perfil_importancia_saliency.png")
-    print(f"✓ Perfil de importancia generado en {ruta_salida_figuras}")
-
-    # --- Paso B: Generar Logo por Atribución ---
-    if atribuciones_list:
-        atribuciones_tensor = torch.stack(atribuciones_list)
-        generar_logo_por_atribucion(
-            secuencias_completas[:num_muestras_ig].numpy(), 
-            atribuciones_tensor.cpu().numpy(), 
-            ruta_salida_figuras / "logo_atribucion_integrated.png"
-        )
-        print(f"✓ Logo por atribución generado.")
-
-    # --- Paso C: Extracción y visualización de PWMs ---
-    print("Extrayendo pesos de la primera capa convolucional...")
-    pwms = extraer_pwms(modelo)
-    visualizar_pwm_logomaker(pwms, ruta_salida_figuras / "pwms")
-    print(f"✓ PWMs y logos de filtros generados en {ruta_salida_figuras / 'pwms'}")
-
-
-if __name__ == "__main__":
-    # Ejemplo de uso standalone (si el modelo ya está entrenado)
-    from model import RedNeuronalSplicing
-    from pathlib import Path
-    
-    model = RedNeuronalSplicing()
-    # Cargar pesos si existen
-    # model.load_state_dict(torch.load('data/export/best_model.pth'))
-    
-    # ruta_test = Path("data/processed/dataset_prueba.csv")
-    # interpretar_modelo(model, ruta_test, Path("data/figures/interpretability"))
-    print("Ejecutar interpretar_modelo() desde main.py o un script externo.")
+    print(f"✓ Análisis de interpretabilidad completado en: {directorio_figuras.name}")

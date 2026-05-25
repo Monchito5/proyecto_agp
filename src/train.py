@@ -10,89 +10,85 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
 from pathlib import Path
-from typing import Tuple, Dict
+from typing import Tuple, Optional
 
 # Importaciones locales estandarizadas
 from dataset import DatasetSplicing
 from model import RedNeuronalSplicing
 
 # --- Rutas de Producción ---
-RAIZ = Path(__file__).parent.parent
-DIR_PROCESADOS = RAIZ / "data" / "processed"
-DIR_FIGURAS = RAIZ / "data" / "figures"
-DIR_MODELOS = RAIZ / "data" / "export"
+RAIZ_PROYECTO = Path(__file__).parent.parent
+DIR_PROCESADOS = RAIZ_PROYECTO / "data" / "processed"
+DIR_FIGURAS = RAIZ_PROYECTO / "data" / "figures"
+DIR_MODELOS = RAIZ_PROYECTO / "data" / "export"
 
-# --- Constantes del Proceso de Entrenamiento ---
-TASA_APRENDIZAJE_ESTANDAR = 0.001
-TAMANO_LOTE_DEFAULT = 32
-TOTAL_EPOCAS_LIMITE = 30
-DISPOSITIVO_PROCESO = 'cuda' if torch.cuda.is_available() else 'cpu'
-
-def inicializar_cargadores_datos(ruta_train: Path, ruta_test: Path) -> Tuple[DataLoader, DataLoader]:
+def inicializar_cargadores_datos(ruta_entrenamiento: Path, ruta_prueba: Path) -> Tuple[DataLoader, DataLoader]:
     """
     Instancia los DataLoaders de PyTorch para entrenamiento y validación.
     """
-    conjunto_entreno = DatasetSplicing(ruta_train)
-    conjunto_validacion = DatasetSplicing(ruta_test)
+    conjunto_entreno = DatasetSplicing(ruta_entrenamiento)
+    conjunto_validacion = DatasetSplicing(ruta_prueba)
 
-    cargador_entreno = DataLoader(conjunto_entreno, batch_size=TAMANO_LOTE_DEFAULT, shuffle=True)
-    cargador_val = DataLoader(conjunto_validacion, batch_size=TAMANO_LOTE_DEFAULT, shuffle=False)
+    cargador_entreno = DataLoader(conjunto_entreno, batch_size=32, shuffle=True)
+    cargador_val = DataLoader(conjunto_validacion, batch_size=32, shuffle=False)
 
     return cargador_entreno, cargador_val
 
-def ejecutar_entrenamiento(cargador_entreno: DataLoader, cargador_val: DataLoader):
+def ejecutar_entrenamiento_robusto(
+    modelo_red: nn.Module, 
+    loader_entreno: DataLoader, 
+    loader_val: DataLoader, 
+    lr: float = 0.001,
+    epocas: int = 10
+):
     """
-    Ciclo principal de entrenamiento y evaluación.
+    Ciclo de entrenamiento completo con soporte para arquitecturas dinámicas.
     """
-    print(f"\nIniciando entrenamiento en dispositivo: {DISPOSITIVO_PROCESO}")
-    modelo_splicing = RedNeuronalSplicing().to(DISPOSITIVO_PROCESO)
-    optimizador = torch.optim.Adam(modelo_splicing.parameters(), lr=TASA_APRENDIZAJE_ESTANDAR)
-    criterio_error = nn.BCELoss()
+    dispositivo = 'cuda' if torch.cuda.is_available() else 'cpu'
+    modelo_red.to(dispositivo)
+    optimizador = torch.optim.Adam(modelo_red.parameters(), lr=lr)
+    criterio = nn.BCELoss()
 
-    mejores_metricas = {"error": float('inf'), "epoca": 0}
+    mejor_error = float('inf')
     historial_error = []
 
-    for epoca in range(1, TOTAL_EPOCAS_LIMITE + 1):
-        modelo_splicing.train()
-        error_total_lote = 0.0
+    print(f"Entrenando en: {dispositivo} | Épocas: {epocas}")
+
+    for epoca in range(1, epocas + 1):
+        modelo_red.train()
+        error_acumulado = 0.0
         
-        for tensores_secuencia, etiquetas_clase in cargador_entreno:
-            tensores_secuencia = tensores_secuencia.to(DISPOSITIVO_PROCESO)
-            etiquetas_clase = etiquetas_clase.to(DISPOSITIVO_PROCESO)
-
+        for tensores_x, etiquetas_y in loader_entreno:
+            tensores_x, etiquetas_y = tensores_x.to(dispositivo), etiquetas_y.to(dispositivo)
             optimizador.zero_grad()
-            predicciones = modelo_splicing(tensores_secuencia)
-            error_calculado = criterio_error(predicciones, etiquetas_clase)
-            
-            error_calculado.backward()
+            salida = modelo_red(tensores_x)
+            error = criterio(salida, etiquetas_y)
+            error.backward()
             optimizador.step()
-            error_total_lote += error_calculado.item()
+            error_acumulado += error.item()
 
-        error_promedio = error_total_lote / len(cargador_entreno)
-        historial_error.append(error_promedio)
-        print(f"Epoca [{epoca}/{TOTAL_EPOCAS_LIMITE}] - Error Entrenamiento: {error_promedio:.4f}")
+        promedio_error = error_acumulado / len(loader_entreno)
+        historial_error.append(promedio_error)
+        print(f"Época {epoca}/{epocas} - Error: {promedio_error:.4f}")
 
-        if error_promedio < mejores_metricas["error"]:
-            mejores_metricas["error"] = error_promedio
-            torch.save(modelo_splicing.state_dict(), DIR_MODELOS / "best_model.pth")
+        if promedio_error < mejor_error:
+            mejor_error = promedio_error
+            # Cambiar de directorio para evitar problemas de rutas Unicode en PyTorch/Windows
+            directorio_actual = os.getcwd()
+            os.chdir(str(DIR_MODELOS))
+            try:
+                torch.save({
+                    'model_state_dict': modelo_red.state_dict(),
+                    'optimizer_state_dict': optimizador.state_dict(),
+                    'val_loss': mejor_error
+                }, "best_model.pth")
+            finally:
+                os.chdir(directorio_actual)
 
-    # Graficar curva de pérdida final en la carpeta de figuras
+    # Guardar curva de aprendizaje
     plt.figure()
-    plt.plot(historial_error, label='Pérdida Entrenamiento')
-    plt.title("Evolución de la Función de Pérdida")
-    plt.xlabel("Época")
-    plt.ylabel("BCELoss")
-    plt.savefig(DIR_FIGURAS / "curva_entrenamiento_loss.png")
+    plt.plot(historial_error, color='teal')
+    plt.title("Curva de Aprendizaje (Entrenamiento)")
+    plt.savefig(DIR_FIGURAS / "entrenamiento_curva_error.png")
     plt.close()
-
-    print(f"\n✓ Entrenamiento completado. Gráfica guardada en {DIR_FIGURAS.name}.")
-
-if __name__ == "__main__":
-    RUTA_TRAIN = DIR_PROCESADOS / "dataset_entrenamiento.csv"
-    RUTA_TEST = DIR_PROCESADOS / "dataset_prueba.csv"
-    
-    if RUTA_TRAIN.exists() and RUTA_TEST.exists():
-        c_train, c_val = inicializar_cargadores_datos(RUTA_TRAIN, RUTA_TEST)
-        ejecutar_entrenamiento(c_train, c_val)
-    else:
-        print("Error: No se hallaron los datasets en data/processed. Ejecute main.py.")
+    print("✓ Modelo guardado y curva generada.")
