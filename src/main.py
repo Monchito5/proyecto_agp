@@ -69,8 +69,8 @@ class GestorPipeline:
         self.conexion_db = gffutils.FeatureDB(str(ARCHIVO_BASE_DATOS))
 
     def preprocesar(self, limite: int = 0):
-        """Etapa de extracción y limpieza masiva."""
-        print("\n=== ETAPA 1: PREPROCESAMIENTO ===")
+        """Etapa de extracción y limpieza masiva para Donantes y Aceptores."""
+        print("\n=== ETAPA 1: PREPROCESAMIENTO (Donantes + Aceptores) ===")
         self.conectar_db()
         
         limite_genes = None
@@ -79,25 +79,41 @@ class GestorPipeline:
         elif limite == 0: limite_genes = None
         else: limite_genes = limite
 
+        # 1. Extracción de todos los sitios reales
         reales = obtener_sitios_reales(self.conexion_db, limite_genes=limite_genes)
         reales_limpios = extraer_y_limpiar_secuencias(reales, ARCHIVO_GENOMA_FASTA)
         
-        objetivo = len(reales_limpios)
-        print(f"Buscando {objetivo} señuelos...")
-        negativos = obtener_sitios_señuelo(ARCHIVO_GENOMA_FASTA, objetivo, reales_limpios)
+        # Separar por tipo para balanceo individual
+        df_reales_don = reales_limpios[reales_limpios['tipo_sitio'] == 'donante']
+        df_reales_acep = reales_limpios[reales_limpios['tipo_sitio'] == 'aceptor']
         
-        if negativos is not None:
-            neg_limpios = extraer_y_limpiar_secuencias(negativos, ARCHIVO_GENOMA_FASTA)
-            if len(neg_limpios) < objetivo:
-                simulados = generar_señuelos_simulados(objetivo - len(neg_limpios))
-                neg_limpios = pd.concat([neg_limpios, simulados])
-        else:
-            neg_limpios = generar_señuelos_simulados(objetivo)
+        # 2. Generación de Señuelos para cada tipo
+        final_negativos = []
+        for tipo, df_tipo in [('donante', df_reales_don), ('aceptor', df_reales_acep)]:
+            objetivo = len(df_tipo)
+            print(f"Buscando {objetivo} señuelos para {tipo}...")
+            negativos = obtener_sitios_señuelo(ARCHIVO_GENOMA_FASTA, objetivo, df_tipo, tipo=tipo)
+            
+            if negativos is not None:
+                neg_limpios = extraer_y_limpiar_secuencias(negativos, ARCHIVO_GENOMA_FASTA)
+                if len(neg_limpios) < objetivo:
+                    faltantes = objetivo - len(neg_limpios)
+                    simulados = generar_señuelos_simulados(faltantes, tipo=tipo)
+                    neg_limpios = pd.concat([neg_limpios, simulados])
+                final_negativos.append(neg_limpios)
+            else:
+                final_negativos.append(generar_señuelos_simulados(objetivo, tipo=tipo))
 
-        self.tabla_datos = pd.concat([reales_limpios, neg_limpios], ignore_index=True)
+        df_negativos_total = pd.concat(final_negativos, ignore_index=True)
+        
+        # 3. Consolidación Final
+        self.tabla_datos = pd.concat([reales_limpios, df_negativos_total], ignore_index=True)
         self.tabla_datos = self.tabla_datos.sample(frac=1, random_state=SEMILLA_ALEATORIA).reset_index(drop=True)
         self.tabla_datos.to_csv(ARCHIVO_DATASET_CONSOLIDADO, index=False)
-        print(f"✓ Dataset consolidado generado.")
+        
+        counts = self.tabla_datos.groupby(['tipo_sitio', 'label']).size().to_dict()
+        print(f"✓ Dataset consolidado: {len(self.tabla_datos)} muestras.")
+        print(f"Distribución: {counts}")
         self.tabla_datos = None 
 
     def ejecutar_eda(self):
