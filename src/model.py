@@ -10,7 +10,7 @@ from typing import Tuple, List
 class RedNeuronalSplicing(nn.Module):
     """
     Arquitectura de Red Neuronal Convolucional 1D para predicción de sitios de splicing.
-    Permite configuración dinámica para optimización evolutiva.
+    Integra información del tipo de sitio (Donante/Aceptor) en la etapa densa.
     """
     
     def __init__(
@@ -21,7 +21,7 @@ class RedNeuronalSplicing(nn.Module):
         tasa_abandono_fc: float = 0.5
     ):
         """
-        Inicializa las capas de la red con parámetros ajustables.
+        Inicializa las capas de la red.
         """
         super(RedNeuronalSplicing, self).__init__()
 
@@ -59,8 +59,8 @@ class RedNeuronalSplicing(nn.Module):
         self.agrupacion3 = nn.MaxPool1d(kernel_size=3, stride=3)
 
         # CAPAS DENSAS
-        # El tamaño 4 proviene de las reducciones sucesivas: 200 -> 50 -> 12 -> 4
-        self.dimension_entrada_fc = lista_filtros[2] * 4
+        # Entrada: Características de convolución + 1 neurona para el Tipo de Sitio
+        self.dimension_entrada_fc = (lista_filtros[2] * 4) + 1
         self.capa_fc1 = nn.Linear(self.dimension_entrada_fc, 256)
         self.normalizacion_fc = nn.BatchNorm1d(256)
         self.abandono_fc = nn.Dropout(tasa_abandono_fc)
@@ -68,28 +68,30 @@ class RedNeuronalSplicing(nn.Module):
         self.capa_salida = nn.Linear(256, 1)
         self.activacion_final = nn.Sigmoid()
 
-    def forward(self, tensor_x: torch.Tensor) -> torch.Tensor:
+    def forward(self, tensor_x: torch.Tensor, tensor_tipo: torch.Tensor) -> torch.Tensor:
         """
-        Define el flujo de datos. Entrada: (batch, 200, 4)
+        Flujo de datos integrando el tipo de sitio.
         """
         # Reordenar: (batch, 4, 200)
         tensor_x = tensor_x.permute(0, 2, 1)
 
-        # Bloque 1
+        # Bloques Convolucionales
         tensor_x = F.relu(self.normalizacion1(self.capa_conv1(tensor_x)))
         tensor_x = self.agrupacion1(self.abandono1(tensor_x))
 
-        # Bloque 2
         tensor_x = F.relu(self.normalizacion2(self.capa_conv2(tensor_x)))
         tensor_x = self.agrupacion2(self.abandono2(tensor_x))
 
-        # Bloque 3
         tensor_x = F.relu(self.normalizacion3(self.capa_conv3(tensor_x)))
         tensor_x = self.agrupacion3(self.abandono3(tensor_x))
 
-        # Clasificador
+        # Aplanar y Concatenar metadatos (Tipo de Sitio)
         tensor_x = tensor_x.view(tensor_x.size(0), -1)
-        tensor_x = F.relu(self.normalizacion_fc(self.capa_fc1(tensor_x)))
-        tensor_x = self.activacion_final(self.capa_salida(self.abandono_fc(tensor_x)))
+        # Concatenar el tipo de sitio (0 o 1) al vector de características
+        tensor_combinado = torch.cat((tensor_x, tensor_tipo), dim=1)
+
+        # Clasificador
+        tensor_combinado = F.relu(self.normalizacion_fc(self.capa_fc1(tensor_combinado)))
+        tensor_combinado = self.activacion_final(self.capa_salida(self.abandono_fc(tensor_combinado)))
         
-        return tensor_x
+        return tensor_combinado

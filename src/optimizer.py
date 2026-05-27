@@ -20,140 +20,137 @@ class ConfiguracionEvolutiva:
     total_generaciones: int = 20
     factor_mutacion: float = 0.7
     probabilidad_cruce: float = 0.9
-    semilla: int = 7
+    semilla_azar: int = 7
 
 @dataclass
 class ResultadoOptimizacion:
     """Estructura para almacenar el mejor individuo y su desempeño."""
     mejor_vector: np.ndarray
     mejor_aptitud: float
-    historial: np.ndarray
+    historial_error: np.ndarray
 
 class OptimizadorHiperparametros:
     """
     Gestiona la búsqueda de parámetros óptimos mediante Evolución Diferencial.
     """
 
-    def __init__(self, ruta_entreno: Path, ruta_val: Path):
-        self.ruta_entreno = ruta_entreno
-        self.ruta_val = ruta_val
-        self.dispositivo = 'cuda' if torch.cuda.is_available() else 'cpu'
+    def __init__(self, ruta_entrenamiento: Path, ruta_validacion: Path):
+        self.ruta_entrenamiento = ruta_entrenamiento
+        self.ruta_validacion = ruta_validacion
+        self.dispositivo_calculo = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     def funcion_aptitud(self, vector_parametros: np.ndarray) -> float:
         """
         Evalúa el desempeño de una configuración de la CNN.
-        Mapea el vector continuo a parámetros discretos y arquitectónicos.
         """
-        # Mapeo de parámetros
         tasa_aprendizaje = 10**vector_parametros[0]
-        tasa_abandono = vector_parametros[1]
-        filtros = [int(vector_parametros[2]), int(vector_parametros[3]), int(vector_parametros[4])]
-        # Kernels deben ser impares
-        kernels = [
+        tasa_abandono_capas = vector_parametros[1]
+        lista_filtros = [int(vector_parametros[2]), int(vector_parametros[3]), int(vector_parametros[4])]
+        lista_kernels = [
             2 * int(vector_parametros[5]) + 1,
             2 * int(vector_parametros[6]) + 1,
             2 * int(vector_parametros[7]) + 1
         ]
 
-        print(f"\nEvaluando configuración: LR={tasa_aprendizaje:.4f}, Filtros={filtros}, Kernels={kernels}")
+        print(f"\nEvaluando configuración: LR={tasa_aprendizaje:.4f}, Filtros={lista_filtros}")
         
         try:
-            # Entrenamiento rápido (3 épocas) para evaluación de fitness
-            precision = self._entrenar_y_evaluar(tasa_aprendizaje, tasa_abandono, filtros, kernels)
-            # Retornar 1 - precisión (para minimizar en ED)
-            return 1.0 - precision
-        except Exception as error_eval:
-            print(f"Error en evaluación: {error_eval}")
-            return 1.0 # Peor aptitud posible
+            precision_obtenida = self._entrenar_y_evaluar(
+                tasa_aprendizaje, tasa_abandono_capas, lista_filtros, lista_kernels
+            )
+            return 1.0 - precision_obtenida
+        except Exception as error_ejecucion:
+            print(f"Error en evaluación: {error_ejecucion}")
+            return 1.0 
 
-    def _entrenar_y_evaluar(self, lr: float, dropout: float, filtros: List[int], kernels: List[int]) -> float:
+    def _entrenar_y_evaluar(self, tasa_lr: float, abandono: float, filtros: List[int], kernels: List[int]) -> float:
         """Entrenamiento minimalista para calcular el fitness."""
-        ds_entreno = DatasetSplicing(self.ruta_entreno)
-        ds_val = DatasetSplicing(self.ruta_val)
-        dl_entreno = DataLoader(ds_entreno, batch_size=64, shuffle=True)
-        dl_val = DataLoader(ds_val, batch_size=64, shuffle=False)
+        dataset_entreno = DatasetSplicing(self.ruta_entrenamiento)
+        dataset_val = DatasetSplicing(self.ruta_validacion)
+        loader_entreno = DataLoader(dataset_entreno, batch_size=64, shuffle=True)
+        loader_val = DataLoader(dataset_val, batch_size=64, shuffle=False)
 
-        modelo = RedNeuronalSplicing(filtros, kernels, dropout, dropout).to(self.dispositivo)
-        optimizador = torch.optim.Adam(modelo.parameters(), lr=lr)
-        criterio = nn.BCELoss()
+        modelo_red = RedNeuronalSplicing(filtros, kernels, abandono, abandono).to(self.dispositivo_calculo)
+        optimizador_red = torch.optim.Adam(modelo_red.parameters(), lr=tasa_lr)
+        criterio_error = nn.BCELoss()
 
-        # Ciclo de 3 épocas para aptitud rápida
         for _ in range(3):
-            modelo.train()
-            for x_batch, y_batch in dl_entreno:
-                x_batch, y_batch = x_batch.to(self.dispositivo), y_batch.to(self.dispositivo)
-                optimizador.zero_grad()
-                pred = modelo(x_batch)
-                criterio(pred, y_batch).backward()
-                optimizador.step()
+            modelo_red.train()
+            for tensores_x, etiquetas_y, tensores_tipo in loader_entreno:
+                tensores_x = tensores_x.to(self.dispositivo_calculo)
+                etiquetas_y = etiquetas_y.to(self.dispositivo_calculo)
+                tensores_tipo = tensores_tipo.to(self.dispositivo_calculo)
+                
+                optimizador_red.zero_grad()
+                prediccion = modelo_red(tensores_x, tensores_tipo)
+                criterio_error(prediccion, etiquetas_y).backward()
+                optimizador_red.step()
 
-        # Evaluación
-        modelo.eval()
-        correctos = 0
-        total = 0
+        modelo_red.eval()
+        conteo_correctos = 0
+        total_muestras = 0
         with torch.no_grad():
-            for x_batch, y_batch in dl_val:
-                x_batch, y_batch = x_batch.to(self.dispositivo), y_batch.to(self.dispositivo)
-                pred = (modelo(x_batch) > 0.5).float()
-                correctos += (pred == y_batch).sum().item()
-                total += y_batch.size(0)
+            for tensores_x, etiquetas_y, tensores_tipo in loader_val:
+                tensores_x = tensores_x.to(self.dispositivo_calculo)
+                etiquetas_y = etiquetas_y.to(self.dispositivo_calculo)
+                tensores_tipo = tensores_tipo.to(self.dispositivo_calculo)
+                
+                prediccion_binaria = (modelo_red(tensores_x, tensores_tipo) > 0.5).float()
+                conteo_correctos += (prediccion_binaria == etiquetas_y).sum().item()
+                total_muestras += etiquetas_y.size(0)
 
-        return correctos / total if total > 0 else 0.0
+        return conteo_correctos / total_muestras if total_muestras > 0 else 0.0
 
 def evolucion_diferencial(
-    func_obj: Callable[[np.ndarray], float],
-    limites: np.ndarray,
-    config: ConfiguracionEvolutiva
+    funcion_objetivo: Callable[[np.ndarray], float],
+    limites_parametros: np.ndarray,
+    config_evolutiva: ConfiguracionEvolutiva
 ) -> ResultadoOptimizacion:
     """
-    Implementación del Algoritmo Evolutivo Diferencial (DE/rand/1/bin).
+    Implementación del Algoritmo Evolutivo Diferencial.
     """
-    generador = np.random.default_rng(config.semilla)
-    inf, sup = limites[:, 0], limites[:, 1]
-    dim = limites.shape[0]
+    generador_azar = np.random.default_rng(config_evolutiva.semilla_azar)
+    inf, sup = limites_parametros[:, 0], limites_parametros[:, 1]
+    dimension_problema = limites_parametros.shape[0]
 
-    # Inicialización
-    poblacion = generador.uniform(inf, sup, size=(config.tamano_poblacion, dim))
-    aptitud = np.array([func_obj(ind) for ind in poblacion])
+    poblacion_actual = generador_azar.uniform(inf, sup, size=(config_evolutiva.tamano_poblacion, dimension_problema))
+    aptitud_poblacion = np.array([funcion_objetivo(ind) for ind in poblacion_actual])
 
-    mejor_indice = np.argmin(aptitud)
-    mejor_vector = poblacion[mejor_indice].copy()
-    mejor_aptitud = aptitud[mejor_indice]
+    indice_mejor = np.argmin(aptitud_poblacion)
+    vector_mejor = poblacion_actual[indice_mejor].copy()
+    aptitud_mejor = aptitud_poblacion[indice_mejor]
 
-    historial = [mejor_aptitud]
+    historial_aptitud = [aptitud_mejor]
 
-    for gen in range(1, config.total_generaciones + 1):
-        print(f"\n--- Generación Evolutiva {gen}/{config.total_generaciones} ---")
-        nueva_poblacion = poblacion.copy()
-        nueva_aptitud = aptitud.copy()
+    for epoca_gen in range(1, config_evolutiva.total_generaciones + 1):
+        print(f"\n--- Generación Evolutiva {epoca_gen}/{config_evolutiva.total_generaciones} ---")
+        nueva_poblacion = poblacion_actual.copy()
+        nueva_aptitud = aptitud_poblacion.copy()
 
-        for i in range(config.tamano_poblacion):
-            candidatos = [idx for idx in range(config.tamano_poblacion) if idx != i]
-            r1, r2, r3 = generador.choice(candidatos, size=3, replace=False)
+        for i in range(config_evolutiva.tamano_poblacion):
+            indices_candidatos = [idx for idx in range(config_evolutiva.tamano_poblacion) if idx != i]
+            r1, r2, r3 = generador_azar.choice(indices_candidatos, size=3, replace=False)
 
-            # Mutación
-            mutante = poblacion[r1] + config.factor_mutacion * (poblacion[r2] - poblacion[r3])
+            vector_mutante = poblacion_actual[r1] + config_evolutiva.factor_mutacion * (poblacion_actual[r2] - poblacion_actual[r3])
             
-            # Cruce Binomial
-            j_azar = generador.integers(dim)
-            mascara = generador.random(dim) < config.probabilidad_cruce
-            mascara[j_azar] = True
-            hijo = np.where(mascara, mutante, poblacion[i])
-            hijo = np.clip(hijo, inf, sup)
+            j_azar = generador_azar.integers(dimension_problema)
+            mascara_cruce = generador_azar.random(dimension_problema) < config_evolutiva.probabilidad_cruce
+            mascara_cruce[j_azar] = True
+            vector_hijo = np.where(mascara_cruce, vector_mutante, poblacion_actual[i])
+            vector_hijo = np.clip(vector_hijo, inf, sup)
 
-            # Selección Codiciosa
-            aptitud_hijo = func_obj(hijo)
-            if aptitud_hijo < aptitud[i]:
-                nueva_poblacion[i] = hijo
+            aptitud_hijo = funcion_objetivo(vector_hijo)
+            if aptitud_hijo < aptitud_poblacion[i]:
+                nueva_poblacion[i] = vector_hijo
                 nueva_aptitud[i] = aptitud_hijo
 
-        poblacion, aptitud = nueva_poblacion, nueva_aptitud
-        if np.min(aptitud) < mejor_aptitud:
-            mejor_indice = np.argmin(aptitud)
-            mejor_aptitud = aptitud[mejor_indice]
-            mejor_vector = poblacion[mejor_indice].copy()
+        poblacion_actual, aptitud_poblacion = nueva_poblacion, nueva_aptitud
+        if np.min(aptitud_poblacion) < aptitud_mejor:
+            indice_mejor = np.argmin(aptitud_poblacion)
+            aptitud_mejor = aptitud_poblacion[indice_mejor]
+            vector_mejor = poblacion_actual[indice_mejor].copy()
 
-        historial.append(mejor_aptitud)
-        print(f"Mejor aptitud actual (Error): {mejor_aptitud:.4f}")
+        historial_aptitud.append(aptitud_mejor)
+        print(f"Mejor aptitud (Error de Val): {aptitud_mejor:.4f}")
 
-    return ResultadoOptimizacion(mejor_vector, mejor_aptitud, np.array(historial))
+    return ResultadoOptimizacion(vector_mejor, aptitud_mejor, np.array(historial_aptitud))
