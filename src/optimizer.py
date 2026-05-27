@@ -43,11 +43,9 @@ class OptimizadorHiperparametros:
         """
         Evalúa el desempeño de una configuración de la CNN.
         """
-        # Mapeo de parámetros con nombres significativos
         tasa_aprendizaje = 10**vector_parametros[0]
         tasa_abandono_capas = vector_parametros[1]
         lista_filtros = [int(vector_parametros[2]), int(vector_parametros[3]), int(vector_parametros[4])]
-        # Kernels deben ser impares para centrado
         lista_kernels = [
             2 * int(vector_parametros[5]) + 1,
             2 * int(vector_parametros[6]) + 1,
@@ -76,24 +74,28 @@ class OptimizadorHiperparametros:
         optimizador_red = torch.optim.Adam(modelo_red.parameters(), lr=tasa_lr)
         criterio_error = nn.BCELoss()
 
-        # Ciclo de 3 épocas para aptitud rápida (Modo Búsqueda)
         for _ in range(3):
             modelo_red.train()
-            for tensores_x, etiquetas_y in loader_entreno:
-                tensores_x, etiquetas_y = tensores_x.to(self.dispositivo_calculo), etiquetas_y.to(self.dispositivo_calculo)
+            for tensores_x, etiquetas_y, tensores_tipo in loader_entreno:
+                tensores_x = tensores_x.to(self.dispositivo_calculo)
+                etiquetas_y = etiquetas_y.to(self.dispositivo_calculo)
+                tensores_tipo = tensores_tipo.to(self.dispositivo_calculo)
+                
                 optimizador_red.zero_grad()
-                prediccion = modelo_red(tensores_x)
+                prediccion = modelo_red(tensores_x, tensores_tipo)
                 criterio_error(prediccion, etiquetas_y).backward()
                 optimizador_red.step()
 
-        # Evaluación final del individuo
         modelo_red.eval()
         conteo_correctos = 0
         total_muestras = 0
         with torch.no_grad():
-            for tensores_x, etiquetas_y in loader_val:
-                tensores_x, etiquetas_y = tensores_x.to(self.dispositivo_calculo), etiquetas_y.to(self.dispositivo_calculo)
-                prediccion_binaria = (modelo_red(tensores_x) > 0.5).float()
+            for tensores_x, etiquetas_y, tensores_tipo in loader_val:
+                tensores_x = tensores_x.to(self.dispositivo_calculo)
+                etiquetas_y = etiquetas_y.to(self.dispositivo_calculo)
+                tensores_tipo = tensores_tipo.to(self.dispositivo_calculo)
+                
+                prediccion_binaria = (modelo_red(tensores_x, tensores_tipo) > 0.5).float()
                 conteo_correctos += (prediccion_binaria == etiquetas_y).sum().item()
                 total_muestras += etiquetas_y.size(0)
 
@@ -111,7 +113,6 @@ def evolucion_diferencial(
     inf, sup = limites_parametros[:, 0], limites_parametros[:, 1]
     dimension_problema = limites_parametros.shape[0]
 
-    # Inicialización de población
     poblacion_actual = generador_azar.uniform(inf, sup, size=(config_evolutiva.tamano_poblacion, dimension_problema))
     aptitud_poblacion = np.array([funcion_objetivo(ind) for ind in poblacion_actual])
 
@@ -130,17 +131,14 @@ def evolucion_diferencial(
             indices_candidatos = [idx for idx in range(config_evolutiva.tamano_poblacion) if idx != i]
             r1, r2, r3 = generador_azar.choice(indices_candidatos, size=3, replace=False)
 
-            # Mutación diferencial
             vector_mutante = poblacion_actual[r1] + config_evolutiva.factor_mutacion * (poblacion_actual[r2] - poblacion_actual[r3])
             
-            # Cruce binomial
             j_azar = generador_azar.integers(dimension_problema)
             mascara_cruce = generador_azar.random(dimension_problema) < config_evolutiva.probabilidad_cruce
             mascara_cruce[j_azar] = True
             vector_hijo = np.where(mascara_cruce, vector_mutante, poblacion_actual[i])
             vector_hijo = np.clip(vector_hijo, inf, sup)
 
-            # Selección codiciosa
             aptitud_hijo = funcion_objetivo(vector_hijo)
             if aptitud_hijo < aptitud_poblacion[i]:
                 nueva_poblacion[i] = vector_hijo

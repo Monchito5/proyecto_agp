@@ -15,7 +15,7 @@ from pathlib import Path
 RAIZ_LOCAL = Path(__file__).parent.parent
 FIGURAS_DIR = RAIZ_LOCAL / "data" / "figures"
 PROCESADOS_DIR = RAIZ_LOCAL / "data" / "processed"
-ARCHIVO_SALIDA_DOCX = RAIZ_LOCAL / "Reporte.docx"
+ARCHIVO_SALIDA_DOCX = RAIZ_LOCAL / "Reporte_Final_CNN_Splicing.docx"
 
 class GeneradorDocumento:
     """
@@ -72,13 +72,13 @@ class GeneradorDocumento:
 
     def escribir_resultados(self):
         self.agregar_titulo("3. Resultados")
-        self.agregar_parrafo("Visualizaciones del análisis detallado y desempeño del modelo:")
+        self.agregar_parrafo("Visualizaciones detalladas del análisis genómico y desempeño del modelo:")
         
         figuras_lista = [
-            ("gen_01_composicion_features.png", "Composición de la anotación genómica."),
-            ("spec_01_balance_clases.png", "Balance de clases (Real vs Señuelo)."),
-            ("spec_04_gc_content_violin.png", "Distribución de Contenido GC."),
-            ("entrenamiento_curvas_desempeño.png", "Curvas de Aprendizaje (Loss, Acc, F1)."),
+            ("gen_01_resumen_anotacion.png", "Composición global de la anotación genómica."),
+            ("spec_01_balance_clases_splicing.png", "Balance de clases y tipos de sitio."),
+            ("spec_04_contenido_gc_por_tipo.png", "Comparativa de Contenido GC (Donantes vs Aceptores)."),
+            ("entrenamiento_curvas_desempeño.png", "Curvas de aprendizaje (Loss, Accuracy, F1)."),
             ("evaluacion_final_roc.png", "Curva ROC y AUC final.")
         ]
         
